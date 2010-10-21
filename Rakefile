@@ -1,5 +1,10 @@
 require 'lib/spamtrap/version'
 
+desc 'Run tests.'
+task :test do
+  # TODO
+end
+
 desc 'Build gem.'
 task :build => :test do
   system "gem build spamtrap.gemspec"
