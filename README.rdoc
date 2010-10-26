@@ -29,6 +29,10 @@ Now you just need to hide the spamtrap from your real users by adding this to yo
 
   .reindeer_jerky { display: none; }
 
+=== To Do
+
+Write some tests. Ack!
+
 === License
 
 (The MIT License)
