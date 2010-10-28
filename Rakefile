@@ -1,11 +1,14 @@
 $LOAD_PATH.unshift File.expand_path('../lib', __FILE__)
+require 'rake/testtask'
 require 'lib/spamtrap/version'
 
 namespace :gem do
 
   desc 'Run tests.'
-  task :test do
-    # TODO
+  Rake::TestTask.new(:test) do |test|
+    test.libs << 'lib' << 'test'
+    test.pattern = 'test/**/*_test.rb'
+    test.verbose = true
   end
 
   desc 'Build gem.'
@@ -23,3 +26,5 @@ namespace :gem do
   end
 
 end
+
+task :default => 'gem:test'
