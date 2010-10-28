@@ -12,9 +12,9 @@ spec = Gem::Specification.new do |s|
   s.homepage = 'http://github.com/cedric/spamtrap/'
   s.summary = 'Simple spamtrap for spambots.'
   s.description = 'Create bogus form fields (honeypots) that will be filled-in by spambots. When submitted, the form data will be discarded while still returning a 200 response.'
-  s.files = Dir['lib/**/*.rb']
   s.require_paths = ['lib']
-  s.add_dependency('rails', '>= 2.3')
+  s.files = Dir['lib/**/*.rb']
+  s.add_dependency('rails', '>= 2.2')
   s.rubyforge_project = 'spamtrap'
   s.has_rdoc = true
 end
