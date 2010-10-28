@@ -4,7 +4,11 @@ This is a simple {spamtrap}[http://en.wikipedia.org/wiki/Spamtrap] to fight {spa
 
 === Installation
 
-If using Bundler, add this to your Gemfile:
+In Rails 2.3, add the following to your environment.rb:
+
+  config.gem 'spamtrap'
+
+In Rails 3 (or if using Bundler), add the following to your Gemfile:
 
   gem 'spamtrap'
 
