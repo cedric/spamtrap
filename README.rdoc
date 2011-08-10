@@ -33,6 +33,8 @@ Now you just need to hide the spamtrap from your real users by adding this to yo
 
   .reindeer_jerky { display: none; }
 
+The spamtrap mix-in can also take an optional block, where you can do more advance things -- like swapping the honeypot with a real form parameter.
+
 === To Do
 
 Write some tests. Ack!
