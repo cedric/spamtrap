@@ -37,7 +37,8 @@ The spamtrap mix-in can also take an optional block, where you can do more advan
 
 === To Do
 
-Write some tests. Ack!
+- Add a cryptographic nonce to prevent replay attacks. It would probably be an MD5 hash consisting of a timestamp, ip address and secret. The timeout would be configurable.
+- Write some tests. Ack!
 
 === License
 
