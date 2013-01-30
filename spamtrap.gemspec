@@ -1,6 +1,5 @@
 # -*- encoding: utf-8 -*-
-lib = File.expand_path('../lib/', __FILE__)
-$:.unshift lib unless $:.include?(lib)
+$LOAD_PATH << File.dirname(__FILE__)
 require 'lib/spamtrap/version'
 
 spec = Gem::Specification.new do |s|
