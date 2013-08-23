@@ -6,6 +6,7 @@ spec = Gem::Specification.new do |s|
   s.name = 'spamtrap'
   s.version = Spamtrap::VERSION
   s.platform = Gem::Platform::RUBY
+  s.license = 'MIT'
   s.author = 'Cedric Howe'
   s.email = 'cedric@freezerbox.com'
   s.homepage = 'http://github.com/cedric/spamtrap/'
@@ -16,6 +17,4 @@ spec = Gem::Specification.new do |s|
   s.required_rubygems_version = '>= 1.3.6'
   s.add_dependency('rails', '>= 2.3')
   s.test_files = Dir['test/**/*.rb']
-  s.rubyforge_project = 'spamtrap'
-  s.has_rdoc = true
 end
