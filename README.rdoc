@@ -11,7 +11,7 @@ In Rails 2.3, add the following to your environment.rb:
 
   config.gem 'spamtrap'
 
-In Rails 3 (or if using Bundler), add the following to your Gemfile:
+In Rails 3+ (or if using Bundler), add the following to your Gemfile:
 
   gem 'spamtrap'
 
@@ -26,7 +26,7 @@ Declare the controller actions you want the spamtrap enabled for:
 In your views, add a call to the "spamtrap" form builder to your forms to output the honeypot fields:
 
   - form_for @comment do |f|
-    = f.spamtrap :sarah_palin_walks_with_dinosaurs, :class => 'reindeer_jerky'
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
     %fieldset
       = f.label :body, "Post Comment"
       = f.text_area :body
@@ -40,14 +40,15 @@ The spamtrap mix-in can also take an optional block, where you can do more advan
 
 === To Do
 
-- Add a cryptographic nonce to prevent replay attacks. It would probably be an MD5 hash consisting of a timestamp, ip address and secret. The timeout would be configurable.
+- Add a cryptographic nonce to prevent replay attacks. It would probably be an MD5 hash consisting of a timestamp, ip address and a secret token. The timeout would be configurable.
+- Consider field name mutation throughout form.
 - Write some tests. Ack!
 
 === License
 
 (The MIT License)
 
-Copyright (c) 2010 Cedric Howe
+Copyright (c) 2010-2013 Cedric Howe
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
