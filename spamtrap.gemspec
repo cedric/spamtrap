@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
-$LOAD_PATH << File.dirname(__FILE__)
-require 'lib/spamtrap/version'
+$LOAD_PATH << File.dirname(__FILE__) + '/lib'
+require 'spamtrap/version'
 
 spec = Gem::Specification.new do |s|
   s.name = 'spamtrap'
