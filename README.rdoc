@@ -49,7 +49,7 @@ The spamtrap mix-in can also take an optional block, where you can do more advan
 
 (The MIT License)
 
-Copyright (c) 2010-2013 Cedric Howe
+Copyright (c) 2010-2014 Cedric Howe
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
