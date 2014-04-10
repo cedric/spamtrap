@@ -29,7 +29,7 @@ In your views, add a call to the "spamtrap" form builder to your forms to output
   - form_for @comment do |f|
     = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
     %fieldset
-      = f.label :body, "Post Comment"
+      = f.label :body
       = f.text_area :body
     = f.submit
 
