@@ -21,7 +21,7 @@ In Rails 3+ (or if using Bundler), add the following to your Gemfile:
 Declare the controller actions you want the spamtrap enabled for:
 
   class CommentsController < ApplicationController
-    spamtrap [:create, :update], :sarah_palin_walks_with_dinosaurs
+    spamtrap :sarah_palin_walks_with_dinosaurs, only: %i(create update)
   end
 
 In your views, add a call to the "spamtrap" form builder to your forms to output the honeypot fields:
