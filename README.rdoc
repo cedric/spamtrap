@@ -1,6 +1,7 @@
 {<img src="https://badge.fury.io/rb/spamtrap.png" alt="Gem Version" />}[http://badge.fury.io/rb/spamtrap]
 {<img src="https://secure.travis-ci.org/cedric/spamtrap.png?branch=master" alt="Build Status" />}[https://travis-ci.org/cedric/spamtrap]
 {<img src="https://codeclimate.com/github/cedric/spamtrap.png" />}[https://codeclimate.com/github/cedric/spamtrap]
+{<img src="https://gemnasium.com/cedric/spamtrap.svg" alt="Dependency Status" />}[https://gemnasium.com/cedric/spamtrap]
 
 == Spamtrap
 
