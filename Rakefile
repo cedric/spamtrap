@@ -13,7 +13,7 @@ namespace :gem do
   end
 
   desc 'Build gem.'
-  task :build => :test do
+  task :build do
     system "gem build spamtrap.gemspec"
   end
 
