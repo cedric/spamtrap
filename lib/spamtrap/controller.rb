@@ -6,7 +6,7 @@ module Spamtrap::Controller
 
   module ActsAsMethods
     def spamtrap(honeypot = 'spamtrap', options = {}, &block)
-      before_filter(options) do |controller|
+      before_action(options) do |controller|
         controller.instance_eval(&block) if block_given?
         controller.instance_eval do
           if params[honeypot].present?

@@ -1,6 +1,6 @@
 require File.join(File.dirname(__FILE__), 'test_helper')
 
-class ControllerTest < Test::Unit::TestCase
+class ControllerTest < Minitest::Test
 
   def test_foobar
     assert true
