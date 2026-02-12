@@ -15,6 +15,7 @@ spec = Gem::Specification.new do |s|
   s.require_paths = ['lib']
   s.files = Dir['lib/**/*.rb']
   s.test_files = Dir['test/**/*.rb']
+  s.required_ruby_version = '>= 3.0.0'
   s.required_rubygems_version = '>= 1.3.6'
-  s.add_dependency('rails')
+  s.add_dependency('rails', '>= 7.0')
 end

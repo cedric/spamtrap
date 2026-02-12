@@ -1,4 +1,4 @@
 require 'rubygems'
 require 'action_controller'
-require 'test/unit'
+require 'minitest/autorun'
 require 'spamtrap'
