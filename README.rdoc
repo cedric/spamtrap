@@ -1,7 +1,3 @@
-{<img src="https://badge.fury.io/rb/spamtrap.svg" alt="Gem Version" />}[http://badge.fury.io/rb/spamtrap]
-{<img src="https://secure.travis-ci.org/cedric/spamtrap.svg?branch=master" alt="Build Status" />}[https://travis-ci.org/cedric/spamtrap]
-{<img src="https://codeclimate.com/github/cedric/spamtrap.svg" />}[https://codeclimate.com/github/cedric/spamtrap]
-
 == Spamtrap
 
 This is a simple {spamtrap}[http://en.wikipedia.org/wiki/Spamtrap] to fight {spamdexing}[http://en.wikipedia.org/wiki/Spamdexing]. You can create bogus form fields ({honeypots}[http://en.wikipedia.org/wiki/Honeypot_%28computing%29]) that will be filled-in by spambots. When these forms are submitted, the content will be discarded while still returning a 200 response.
@@ -39,7 +35,6 @@ The spamtrap mix-in can also take an optional block, where you can do more advan
 
 - Add a cryptographic nonce to prevent replay attacks. It would probably be an MD5 hash consisting of a timestamp, ip address and a secret token. The timeout would be configurable.
 - Consider field name mutation throughout form.
-- Write some tests. Ack!
 
 === License
 
