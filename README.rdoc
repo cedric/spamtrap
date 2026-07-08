@@ -1,6 +1,16 @@
 == Spamtrap
 
-This is a simple {spamtrap}[http://en.wikipedia.org/wiki/Spamtrap] to fight {spamdexing}[http://en.wikipedia.org/wiki/Spamdexing]. You can create bogus form fields ({honeypots}[http://en.wikipedia.org/wiki/Honeypot_%28computing%29]) that will be filled-in by spambots. When these forms are submitted, the content will be discarded while still returning a 200 response.
+Spamtrap is a Rails gem that protects forms from spambots through three complementary mechanisms:
+
+- *Honeypot fields* — hidden textarea fields that real users never touch. Bots that fill them in
+  are silently discarded with a <tt>200 OK</tt> response.
+- *Cryptographic nonce* — an HMAC-SHA256 token binding each submission to a timestamp and client
+  IP. Replayed or expired submissions are rejected before reaching the controller.
+- *Field name mutation* — all form field names are AES-128-GCM encrypted on every page render,
+  so bots cannot target fields by recognizable names like <tt>email</tt> or <tt>body</tt>. The
+  controller remaps them back transparently; no changes to application code are required.
+
+Each feature is opt-in and can be used independently or combined.
 
 === Installation
 
@@ -90,9 +100,8 @@ Mutation can be combined with the nonce for full replay and bot protection:
 
   = f.spamtrap :field, mutate: true, nonce: true
 
-Note: <tt>fields_for</tt> (nested attributes) creates a child FormBuilder instance that does
-not yet inherit the mutation salt. Nested forms are a known limitation of the current
-implementation.
+Mutation propagates automatically to <tt>fields_for</tt> nested builders, so nested
+attributes forms are mutated at every level without any additional configuration.
 
 === Example
 
@@ -109,10 +118,6 @@ fields:
 Now you just need to hide the spamtrap from your real users by adding this to your CSS:
 
   .reindeer_jerky { display: none; }
-
-=== To Do
-
-- Propagate mutation salt to <tt>fields_for</tt> child builders.
 
 === License
 

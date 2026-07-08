@@ -36,6 +36,17 @@ class MutationController < ActionController::Base
   end
 end
 
+class NestedMutationController < ActionController::Base
+  spamtrap :trap_field, mutate: true, only: :create
+
+  def create
+    # Render top-level and nested address keys to verify salt propagation
+    comment_keys = params[:comment].to_unsafe_h.except('address').keys.sort
+    address_keys = params.dig(:comment, :address).to_unsafe_h.keys.sort rescue []
+    render plain: "#{comment_keys.join(',')};#{address_keys.join(',')}"
+  end
+end
+
 module NonceTestHelper
   REMOTE_IP = '0.0.0.0'
 
@@ -43,6 +54,13 @@ module NonceTestHelper
     secret = Rails.application.secret_key_base
     OpenSSL::HMAC.hexdigest('SHA256', secret, "#{timestamp}:#{ip}")
   end
+end
+
+module MutationTestHelper
+  include Spamtrap::Crypto
+
+  MUTATION_SALT     = SecureRandom.bytes(Spamtrap::Crypto::NONCE_LEN)
+  MUTATION_SALT_HEX = MUTATION_SALT.unpack1('H*')
 end
 
 class HoneypotControllerTest < ActionController::TestCase
@@ -144,11 +162,8 @@ class NonceTimeoutControllerTest < ActionController::TestCase
 end
 
 class MutationControllerTest < ActionController::TestCase
-  include Spamtrap::Crypto
+  include MutationTestHelper
   tests MutationController
-
-  MUTATION_SALT = SecureRandom.bytes(Spamtrap::Crypto::NONCE_LEN)
-  MUTATION_SALT_HEX = MUTATION_SALT.unpack1('H*')
 
   def test_encrypted_field_names_are_remapped_to_real_names
     body_token  = spamtrap_encrypt_field('body',  MUTATION_SALT)
@@ -199,5 +214,31 @@ class MutationControllerTest < ActionController::TestCase
 
     assert_response :ok
     refute_equal 'body', response.body
+  end
+end
+
+class NestedMutationControllerTest < ActionController::TestCase
+  include MutationTestHelper
+  tests NestedMutationController
+
+  def test_salt_propagates_to_fields_for_child_builder
+    body_token    = spamtrap_encrypt_field('body',    MUTATION_SALT)
+    street_token  = spamtrap_encrypt_field('street',  MUTATION_SALT)
+    city_token    = spamtrap_encrypt_field('city',    MUTATION_SALT)
+
+    post :create, params: {
+      trap_field: '',
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: {
+        body_token => 'Hello',
+        address: {
+          street_token => '123 Main St',
+          city_token   => 'Springfield'
+        }
+      }
+    }
+
+    assert_response :ok
+    assert_equal 'body;city,street', response.body
   end
 end
