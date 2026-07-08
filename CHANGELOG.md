@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.3] - 2026-07-08
+
+### Fixed
+
+- Field name mutation now works correctly with model-backed forms when `mutate: true`.
+  Field helpers preserve pre-populated values without attempting model lookups on encrypted
+  field names.
+
 ## [0.3.2] - 2026-07-08
 
 ### Added
