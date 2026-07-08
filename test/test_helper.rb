@@ -21,6 +21,9 @@ Rails.application.routes.draw do
   post 'nested_mutation/create',  to: 'nested_mutation#create'
   post 'global_defaults/create',  to: 'global_defaults#create'
   post 'global_override/create',  to: 'global_override#create'
+  post 'on_trap_global_callback/create',       to: 'on_trap_global_callback#create'
+  post 'on_trap_global_nonce_callback/create', to: 'on_trap_global_nonce_callback#create'
+  post 'on_trap_per_declaration/create',       to: 'on_trap_per_declaration#create'
 end
 
 class ActionController::TestCase

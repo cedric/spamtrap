@@ -9,9 +9,10 @@ module Spamtrap::Controller
     def spamtrap(honeypot = 'spamtrap', options = {}, &block)
       # Capture explicit per-call values; use sentinel so globals are read
       # at request time rather than at class definition time.
-      nonce_opt   = options.key?(:nonce)         ? options.delete(:nonce)         : :global
-      timeout_opt = options.key?(:nonce_timeout) ? options.delete(:nonce_timeout) : :global
-      mutate_opt  = options.key?(:mutate)        ? options.delete(:mutate)        : :global
+      nonce_opt    = options.key?(:nonce)         ? options.delete(:nonce)         : :global
+      timeout_opt  = options.key?(:nonce_timeout) ? options.delete(:nonce_timeout) : :global
+      mutate_opt   = options.key?(:mutate)        ? options.delete(:mutate)        : :global
+      on_trap_opt  = options.key?(:on_trap)       ? options.delete(:on_trap)       : :global
 
       before_action(options) do |controller|
         controller.instance_eval(&block) if block_given?
@@ -24,9 +25,11 @@ module Spamtrap::Controller
 
           if params[honeypot].present?
             Rails.logger.warn "Spamtrap triggered by #{request.remote_ip}."
+            spamtrap_invoke_on_trap(:honeypot, on_trap_opt)
             head 200
           elsif nonce_enabled && !spamtrap_valid_nonce?(nonce_timeout)
             Rails.logger.warn "Spamtrap nonce invalid from #{request.remote_ip}."
+            spamtrap_invoke_on_trap(:nonce, on_trap_opt)
             head 200
           end
         end
@@ -69,7 +72,15 @@ module Spamtrap::Controller
     end
   end
 
-  private :spamtrap_valid_nonce?, :spamtrap_remap_params, :spamtrap_remap_hash
+  def spamtrap_invoke_on_trap(reason, on_trap_opt)
+    callback = on_trap_opt == :global ? Spamtrap.on_trap : on_trap_opt
+    return unless callback.respond_to?(:call)
+    callback.call(reason: reason, request: request)
+  rescue StandardError => e
+    Rails.logger.error "Spamtrap on_trap callback raised: #{e.class}: #{e.message}"
+  end
+
+  private :spamtrap_valid_nonce?, :spamtrap_remap_params, :spamtrap_remap_hash, :spamtrap_invoke_on_trap
 
 end
 

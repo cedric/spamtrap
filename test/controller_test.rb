@@ -345,3 +345,129 @@ class GlobalOverrideControllerTest < ActionController::TestCase
     assert_equal 'body', response.body
   end
 end
+
+# Controllers for on_trap callback tests.
+class OnTrapGlobalCallbackController < ActionController::Base
+  spamtrap :trap_field, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class OnTrapGlobalNonceCallbackController < ActionController::Base
+  spamtrap :trap_field, nonce: true, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class OnTrapPerDeclarationController < ActionController::Base
+  spamtrap :trap_field, only: :create,
+    on_trap: ->(reason:, request:) { Thread.current[:per_decl_calls] << { reason: reason, ip: request.remote_ip } }
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class OnTrapCallbackTest < ActionController::TestCase
+  tests OnTrapGlobalCallbackController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << { reason: reason, ip: request.remote_ip } }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_global_callback_invoked_on_honeypot_trap
+    post :create, params: { trap_field: 'spam' }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal 1, @calls.size
+    assert_equal :honeypot, @calls.first[:reason]
+  end
+
+  def test_global_callback_not_invoked_on_legitimate_request
+    post :create, params: { trap_field: '' }
+    assert_response :ok
+    assert_equal 'success', response.body
+    assert_empty @calls
+  end
+
+  def test_no_callback_when_on_trap_is_nil
+    Spamtrap.on_trap = nil
+    post :create, params: { trap_field: 'spam' }
+    assert_response :ok
+    assert_empty response.body
+    # no error raised — test simply passes
+  end
+end
+
+class OnTrapNonceCallbackTest < ActionController::TestCase
+  include NonceTestHelper
+  tests OnTrapGlobalNonceCallbackController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << { reason: reason, ip: request.remote_ip } }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_global_callback_invoked_on_nonce_trap
+    post :create, params: { trap_field: '' }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal 1, @calls.size
+    assert_equal :nonce, @calls.first[:reason]
+  end
+end
+
+class OnTrapPerDeclarationCallbackTest < ActionController::TestCase
+  tests OnTrapPerDeclarationController
+
+  setup do
+    Thread.current[:per_decl_calls] = []
+    @global_calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @global_calls << reason }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+    Thread.current[:per_decl_calls] = nil
+  end
+
+  def test_per_declaration_callback_takes_precedence_over_global
+    post :create, params: { trap_field: 'spam' }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal 1, Thread.current[:per_decl_calls].size
+    assert_equal :honeypot, Thread.current[:per_decl_calls].first[:reason]
+    assert_empty @global_calls
+  end
+end
+
+class OnTrapCallbackErrorResilienceTest < ActionController::TestCase
+  tests OnTrapGlobalCallbackController
+
+  setup do
+    Spamtrap.on_trap = ->(**) { raise 'callback exploded' }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_broken_callback_does_not_prevent_head_200
+    post :create, params: { trap_field: 'spam' }
+    assert_response :ok
+    assert_empty response.body
+  end
+end
