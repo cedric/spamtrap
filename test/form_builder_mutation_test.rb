@@ -121,7 +121,7 @@ class FormBuilderMutationTest < ActionView::TestCase
     assert_nothing_raised { f.select(:country, %w[US CA GB]) }
   end
 
-  def test_select_presects_model_value
+  def test_select_preselects_model_value
     msg = Message.new(nil, nil, nil, nil, 'CA')
     f   = build_form_builder(msg)
     f.spamtrap(:trap, mutate: true)
