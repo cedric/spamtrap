@@ -70,8 +70,8 @@ class FormBuilderMutationTest < ActionView::TestCase
 
     html = f.text_field(:name, value: 'Overridden')
 
-    assert_match 'Overridden', html
-    refute_match 'Alice', html
+    assert_includes html, 'Overridden'
+    refute_includes html, 'Alice'
   end
 
   # --- no mutation ---
