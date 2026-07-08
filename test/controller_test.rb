@@ -242,3 +242,106 @@ class NestedMutationControllerTest < ActionController::TestCase
     assert_equal 'body;city,street', response.body
   end
 end
+
+# Controller that relies entirely on global defaults (no per-call options).
+class GlobalDefaultsController < ActionController::Base
+  spamtrap :trap_field, only: :create
+
+  def create
+    render plain: params[:comment].to_unsafe_h.keys.sort.join(',')
+  end
+end
+
+# Controller that explicitly overrides global defaults with false.
+class GlobalOverrideController < ActionController::Base
+  spamtrap :trap_field, nonce: false, mutate: false, only: :create
+
+  def create
+    render plain: params[:comment].to_unsafe_h.keys.sort.join(',')
+  end
+end
+
+class GlobalDefaultsControllerTest < ActionController::TestCase
+  include MutationTestHelper
+  include NonceTestHelper
+  tests GlobalDefaultsController
+
+  setup do
+    Spamtrap.nonce  = true
+    Spamtrap.mutate = true
+  end
+
+  teardown do
+    Spamtrap.nonce  = false
+    Spamtrap.mutate = false
+  end
+
+  def test_global_nonce_default_rejects_missing_nonce
+    post :create, params: { trap_field: '', comment: { body: 'Hello' } }
+    assert_response :ok
+    assert_empty response.body
+  end
+
+  def test_global_nonce_default_accepts_valid_nonce
+    timestamp = Time.now.to_i
+    post :create, params: {
+      trap_field: '',
+      spamtrap_timestamp: timestamp,
+      spamtrap_nonce: generate_nonce(timestamp),
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: { spamtrap_encrypt_field('body', MUTATION_SALT) => 'Hello' }
+    }
+    assert_response :ok
+    assert_equal 'body', response.body
+  end
+
+  def test_global_mutate_default_remaps_encrypted_fields
+    body_token = spamtrap_encrypt_field('body', MUTATION_SALT)
+    timestamp  = Time.now.to_i
+    post :create, params: {
+      trap_field: '',
+      spamtrap_timestamp: timestamp,
+      spamtrap_nonce: generate_nonce(timestamp),
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: { body_token => 'Hello' }
+    }
+    assert_response :ok
+    assert_equal 'body', response.body
+  end
+end
+
+class GlobalOverrideControllerTest < ActionController::TestCase
+  include MutationTestHelper
+  tests GlobalOverrideController
+
+  setup do
+    Spamtrap.nonce  = true
+    Spamtrap.mutate = true
+  end
+
+  teardown do
+    Spamtrap.nonce  = false
+    Spamtrap.mutate = false
+  end
+
+  def test_per_call_false_overrides_global_nonce
+    # No nonce params — would fail if global nonce: true were in effect
+    post :create, params: {
+      trap_field: '',
+      comment: { body: 'Hello' }
+    }
+    assert_response :ok
+    assert_equal 'body', response.body
+  end
+
+  def test_per_call_false_overrides_global_mutate
+    # Plain field name — would be remapped if global mutate: true were in effect
+    post :create, params: {
+      trap_field: '',
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: { body: 'Hello' }
+    }
+    assert_response :ok
+    assert_equal 'body', response.body
+  end
+end
