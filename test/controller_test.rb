@@ -365,7 +365,7 @@ end
 
 class OnTrapPerDeclarationController < ActionController::Base
   spamtrap :trap_field, only: :create,
-    on_trap: ->(reason:, request:) { $per_decl_calls << { reason: reason, ip: request.remote_ip } }
+    on_trap: ->(reason:, request:) { Thread.current[:per_decl_calls] << { reason: reason, ip: request.remote_ip } }
 
   def create
     render plain: 'success'
@@ -434,22 +434,22 @@ class OnTrapPerDeclarationCallbackTest < ActionController::TestCase
   tests OnTrapPerDeclarationController
 
   setup do
-    $per_decl_calls = []
+    Thread.current[:per_decl_calls] = []
     @global_calls = []
     Spamtrap.on_trap = ->(reason:, request:) { @global_calls << reason }
   end
 
   teardown do
     Spamtrap.on_trap = nil
-    $per_decl_calls = nil
+    Thread.current[:per_decl_calls] = nil
   end
 
   def test_per_declaration_callback_takes_precedence_over_global
     post :create, params: { trap_field: 'spam' }
     assert_response :ok
     assert_empty response.body
-    assert_equal 1, $per_decl_calls.size
-    assert_equal :honeypot, $per_decl_calls.first[:reason]
+    assert_equal 1, Thread.current[:per_decl_calls].size
+    assert_equal :honeypot, Thread.current[:per_decl_calls].first[:reason]
     assert_empty @global_calls
   end
 end
