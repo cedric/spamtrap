@@ -12,13 +12,22 @@ module Spamtrap
     MUTABLE_FIELDS.each do |m|
       define_method(m) do |field, *args, &blk|
         if @spamtrap_salt
-          opts = args.last.is_a?(Hash) ? args.pop.dup : {}
-          model_value = object.respond_to?(field, true) ? object.public_send(field) : nil
+          encrypted_field = spamtrap_encrypt_field(field.to_s, @spamtrap_salt)
+
+          opts =
+            if m == :check_box
+              args.first.is_a?(Hash) ? args.shift.dup : {}
+            else
+              args.last.is_a?(Hash) ? args.pop.dup : {}
+            end
+
+          model_value = object.respond_to?(field) ? object.public_send(field) : nil
 
           case m
           when :check_box
             # :checked controls the checked state; :value is the submitted value ("1" by default)
             opts[:checked] = !!model_value unless opts.key?(:checked)
+            super(encrypted_field, opts, *args, &blk)
           when :select, :collection_select, :grouped_collection_select
             # :selected belongs in the inner options hash, not html_options (the last hash).
             # After popping html_options into opts, args.last is the options hash (if present).
@@ -29,13 +38,15 @@ module Spamtrap
             else
               opts[:selected] = model_value unless opts.key?(:selected)
             end
+
+            super(encrypted_field, *args, opts, &blk)
           when :label
             # label renders a <label> element and does not read a value from the model object
+            super(encrypted_field, *args, opts, &blk)
           else
             opts[:value] = model_value unless opts.key?(:value)
+            super(encrypted_field, *args, opts, &blk)
           end
-
-          super(spamtrap_encrypt_field(field.to_s, @spamtrap_salt), *args, opts, &blk)
         else
           super(field, *args, &blk)
         end
