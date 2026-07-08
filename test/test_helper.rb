@@ -17,6 +17,7 @@ Rails.application.routes.draw do
   post 'honeypot/create',      to: 'honeypot#create'
   post 'nonce/create',         to: 'nonce#create'
   post 'nonce_timeout/create', to: 'nonce_timeout#create'
+  post 'mutation/create',      to: 'mutation#create'
 end
 
 class ActionController::TestCase

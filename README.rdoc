@@ -63,9 +63,46 @@ Note: because the nonce binds to the client IP, users whose IP address changes b
 and form submission (e.g. mobile network handoffs) will be rejected. This is an acceptable
 trade-off for spam protection but may not suit all deployments.
 
+=== Field Name Mutation
+
+Enable field name mutation to make all form fields unrecognizable in HTML source. Every field
+is encrypted with AES-128-GCM using a random per-render salt, so field names change on every
+page load. The controller decrypts and remaps them transparently before the action runs — no
+changes to <tt>params.require(...).permit(...)</tt> or any other controller code required.
+
+Enable mutation in the controller:
+
+  class CommentsController < ApplicationController
+    spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true, only: %i(create update)
+  end
+
+Enable it in the view by passing <tt>mutate: true</tt> to <tt>f.spamtrap</tt>:
+
+  - form_for @comment do |f|
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true
+    = f.label :body
+    = f.text_area :body
+    = f.label :email
+    = f.email_field :email
+    = f.submit
+
+The rendered HTML will contain opaque encrypted field names (~28 characters each) instead of
+<tt>body</tt>, <tt>email</tt>, etc. The encryption key is derived from
+<tt>secret_key_base</tt> so only the originating server can decrypt submissions.
+
+Mutation can be combined with the nonce for full replay and bot protection:
+
+  spamtrap :field, mutate: true, nonce: true, only: %i(create update)
+
+  = f.spamtrap :field, mutate: true, nonce: true
+
+Note: <tt>fields_for</tt> (nested attributes) creates a child FormBuilder instance that does
+not yet inherit the mutation salt. Nested forms are a known limitation of the current
+implementation.
+
 === To Do
 
-- Consider field name mutation throughout form.
+- Propagate mutation salt to <tt>fields_for</tt> child builders.
 
 === License
 

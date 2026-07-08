@@ -1,4 +1,5 @@
 module Spamtrap::Controller
+  include Spamtrap::Crypto
 
   def self.included(base)
     base.extend ActsAsMethods
@@ -6,12 +7,15 @@ module Spamtrap::Controller
 
   module ActsAsMethods
     def spamtrap(honeypot = 'spamtrap', options = {}, &block)
-      nonce_enabled = options.delete(:nonce)
-      nonce_timeout = options.delete(:nonce_timeout) || Spamtrap.nonce_timeout
+      nonce_enabled  = options.delete(:nonce)
+      nonce_timeout  = options.delete(:nonce_timeout) || Spamtrap.nonce_timeout
+      mutate_enabled = options.delete(:mutate)
 
       before_action(options) do |controller|
         controller.instance_eval(&block) if block_given?
         controller.instance_eval do
+          spamtrap_remap_params if mutate_enabled
+
           if params[honeypot].present?
             Rails.logger.warn "Spamtrap triggered by #{request.remote_ip}."
             head 200
@@ -35,7 +39,31 @@ module Spamtrap::Controller
     ActiveSupport::SecurityUtils.secure_compare(nonce, expected)
   end
 
-  private :spamtrap_valid_nonce?
+  def spamtrap_remap_params
+    salt_hex = params[:spamtrap_mutation_salt].to_s
+    return if salt_hex.empty?
+
+    salt_bytes = [salt_hex].pack('H*')
+    return unless salt_bytes.bytesize == Spamtrap::Crypto::NONCE_LEN
+
+    spamtrap_remap_hash(params, salt_bytes)
+  rescue ArgumentError
+    nil
+  end
+
+  def spamtrap_remap_hash(hash, salt)
+    hash.each_key.to_a.each do |key|
+      real = spamtrap_decrypt_field(key.to_s, salt)
+      if real
+        hash[real] = hash.delete(key)
+        key = real
+      end
+      child = hash[key]
+      spamtrap_remap_hash(child, salt) if child.is_a?(ActionController::Parameters)
+    end
+  end
+
+  private :spamtrap_valid_nonce?, :spamtrap_remap_params, :spamtrap_remap_hash
 
 end
 
