@@ -27,6 +27,15 @@ class NonceTimeoutController < ActionController::Base
   end
 end
 
+class MutationController < ActionController::Base
+  spamtrap :trap_field, mutate: true, only: :create
+
+  def create
+    # Render the remapped comment param keys so tests can assert on them
+    render plain: params[:comment].to_unsafe_h.keys.sort.join(',')
+  end
+end
+
 module NonceTestHelper
   REMOTE_IP = '0.0.0.0'
 
@@ -131,5 +140,64 @@ class NonceTimeoutControllerTest < ActionController::TestCase
     }
     assert_response :ok
     assert_empty response.body
+  end
+end
+
+class MutationControllerTest < ActionController::TestCase
+  include Spamtrap::Crypto
+  tests MutationController
+
+  MUTATION_SALT = SecureRandom.bytes(Spamtrap::Crypto::NONCE_LEN)
+  MUTATION_SALT_HEX = MUTATION_SALT.unpack1('H*')
+
+  def test_encrypted_field_names_are_remapped_to_real_names
+    body_token  = spamtrap_encrypt_field('body',  MUTATION_SALT)
+    email_token = spamtrap_encrypt_field('email', MUTATION_SALT)
+
+    post :create, params: {
+      trap_field: '',
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: { body_token => 'Hello world', email_token => 'test@example.com' }
+    }
+
+    assert_response :ok
+    assert_equal 'body,email', response.body
+  end
+
+  def test_unencrypted_field_names_pass_through_unchanged
+    post :create, params: {
+      trap_field: '',
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: { body: 'Hello', email: 'test@example.com' }
+    }
+
+    assert_response :ok
+    assert_equal 'body,email', response.body
+  end
+
+  def test_no_salt_leaves_encrypted_params_unmapped
+    body_token = spamtrap_encrypt_field('body', MUTATION_SALT)
+
+    post :create, params: {
+      trap_field: '',
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    refute_equal 'body', response.body
+  end
+
+  def test_wrong_salt_fails_to_decrypt
+    other_salt     = SecureRandom.bytes(Spamtrap::Crypto::NONCE_LEN)
+    body_token     = spamtrap_encrypt_field('body', other_salt)
+
+    post :create, params: {
+      trap_field: '',
+      spamtrap_mutation_salt: MUTATION_SALT_HEX,
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    refute_equal 'body', response.body
   end
 end

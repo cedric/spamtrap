@@ -9,6 +9,7 @@ module Spamtrap
     end
   end
 
+  require 'spamtrap/crypto'
   require 'spamtrap/controller'
   require 'spamtrap/helper'
 end
