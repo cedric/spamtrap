@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require File.join(File.dirname(__FILE__), 'test_helper')
 require 'action_view'
 require 'action_view/test_case'
