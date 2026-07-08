@@ -8,28 +8,22 @@ Add the following to your Gemfile:
 
   gem 'spamtrap'
 
-=== Example
+=== Honeypot
 
-Declare the controller actions you want the spamtrap enabled for:
+A hidden textarea is added to the form with a deliberately enticing name. Real users never see
+or interact with it (it is hidden via CSS). Spambots, which auto-fill all visible and hidden
+fields, will populate it. When the form is submitted with a non-empty honeypot field, spamtrap
+silently discards the submission and returns a <tt>200 OK</tt> response — indistinguishable
+from a successful submission to the bot.
+
+Declare the controller actions you want protected:
 
   class CommentsController < ApplicationController
     spamtrap :sarah_palin_walks_with_dinosaurs, only: %i(create update)
   end
 
-In your views, add a call to the "spamtrap" form builder to your forms to output the honeypot fields:
-
-  - form_for @comment do |f|
-    = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
-    %fieldset
-      = f.label :body
-      = f.text_area :body
-    = f.submit
-
-Now you just need to hide the spamtrap from your real users by adding this to your CSS:
-
-  .reindeer_jerky { display: none; }
-
-The spamtrap mix-in can also take an optional block, where you can do more advance things -- like swapping the honeypot with a real form parameter.
+The macro accepts an optional block for advanced use cases, such as swapping the honeypot with
+a real form parameter at runtime.
 
 === Replay Attack Protection (Nonce)
 
@@ -100,6 +94,22 @@ Note: <tt>fields_for</tt> (nested attributes) creates a child FormBuilder instan
 not yet inherit the mutation salt. Nested forms are a known limitation of the current
 implementation.
 
+=== Example
+
+In your views, add a call to the "spamtrap" form builder to your forms to output the honeypot
+fields:
+
+  - form_for @comment do |f|
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
+    %fieldset
+      = f.label :body
+      = f.text_area :body
+    = f.submit
+
+Now you just need to hide the spamtrap from your real users by adding this to your CSS:
+
+  .reindeer_jerky { display: none; }
+
 === To Do
 
 - Propagate mutation salt to <tt>fields_for</tt> child builders.
@@ -128,4 +138,3 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
