@@ -43,7 +43,22 @@ module Spamtrap
 
             super(encrypted_field, *args, opts, &blk)
           when :label
-            # label renders a <label> element and does not read a value from the model object
+            # Preserve the human-readable label text using the real field name
+            # before substituting the encrypted form. Mirrors Rails' own
+            # resolution order:
+            #   1. explicit text argument — kept as-is
+            #   2. activerecord.attributes.Model.field (ActiveRecord models)
+            #   3. helpers.label.object_name.field (plain objects / form_with)
+            #   4. humanize fallback
+            unless args.first.is_a?(String)
+              human_text =
+                if object.respond_to?(:to_model)
+                  object.class.human_attribute_name(field.to_s, default: field.to_s.humanize)
+                else
+                  I18n.t(field, scope: [:helpers, :label, object_name], default: field.to_s.humanize)
+                end
+              args.unshift(human_text)
+            end
             super(encrypted_field, *args, opts, &blk)
           else
             opts[:value] = model_value unless opts.key?(:value)
