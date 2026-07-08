@@ -18,6 +18,19 @@ Add the following to your Gemfile:
 
   gem 'spamtrap'
 
+=== Configuration
+
+Global defaults can be set in an initializer. Per-controller or per-action options always
+take precedence, including an explicit <tt>false</tt> that overrides a global <tt>true</tt>.
+
+  # config/initializers/spamtrap.rb
+  Spamtrap.nonce         = true       # require nonce on all spamtrap-protected actions
+  Spamtrap.nonce_timeout = 15.minutes # default 1800 seconds (30 minutes)
+  Spamtrap.mutate        = true       # mutate field names on all protected forms
+
+These settings are read at request time, so changes take effect immediately without
+restarting the server.
+
 === Honeypot
 
 A hidden textarea is added to the form with a deliberately enticing name. Real users never see
@@ -50,31 +63,22 @@ a real form parameter at runtime.
 
 === Replay Attack Protection (Nonce)
 
-Enable cryptographic nonce validation to prevent replay attacks. The nonce is an HMAC-SHA256
-digest of the form submission timestamp and the client IP address, keyed with
-<tt>Rails.application.secret_key_base</tt>. Submissions with an expired or tampered nonce are
-silently discarded with a 200 response.
+The nonce is an HMAC-SHA256 digest of the form submission timestamp and the client IP address,
+keyed with <tt>Rails.application.secret_key_base</tt>. Submissions with an expired or tampered
+nonce are silently discarded with a 200 response.
 
-Enable it per-controller:
+Enable globally via the initializer, or per-controller:
 
-  class CommentsController < ApplicationController
-    spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, only: %i(create update)
-  end
+  spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, only: %i(create update)
 
-And add the nonce fields to your form:
+Add the nonce fields to your form:
 
   - form_for @comment do |f|
     = f.spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, class: 'reindeer_jerky'
 
-Override the timeout for a specific controller action (accepts any value in seconds, or an
-ActiveSupport duration):
+Override the timeout for a specific action (accepts seconds or an ActiveSupport duration):
 
   spamtrap :field, nonce: true, nonce_timeout: 15.minutes, only: %i(create)
-
-Set a global default timeout in an initializer (default is 1800 seconds / 30 minutes):
-
-  # config/initializers/spamtrap.rb
-  Spamtrap.nonce_timeout = 1.hour
 
 Note: because the nonce binds to the client IP, users whose IP address changes between page load
 and form submission (e.g. mobile network handoffs) will be rejected. This is an acceptable
@@ -82,18 +86,16 @@ trade-off for spam protection but may not suit all deployments.
 
 === Field Name Mutation
 
-Enable field name mutation to make all form fields unrecognizable in HTML source. Every field
-is encrypted with AES-128-GCM using a random per-render salt, so field names change on every
-page load. The controller decrypts and remaps them transparently before the action runs — no
-changes to <tt>params.require(...).permit(...)</tt> or any other controller code required.
+Every field is encrypted with AES-128-GCM using a random per-render salt, so field names are
+unrecognizable in HTML source and change on every page load. The controller decrypts and remaps
+them transparently before the action runs — no changes to
+<tt>params.require(...).permit(...)</tt> or any other controller code required.
 
-Enable mutation in the controller:
+Enable globally via the initializer, or per-controller:
 
-  class CommentsController < ApplicationController
-    spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true, only: %i(create update)
-  end
+  spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true, only: %i(create update)
 
-Enable it in the view by passing <tt>mutate: true</tt> to <tt>f.spamtrap</tt>:
+Pass <tt>mutate: true</tt> to <tt>f.spamtrap</tt> in your view:
 
   - form_for @comment do |f|
     = f.spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true

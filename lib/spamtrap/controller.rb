@@ -7,13 +7,19 @@ module Spamtrap::Controller
 
   module ActsAsMethods
     def spamtrap(honeypot = 'spamtrap', options = {}, &block)
-      nonce_enabled  = options.delete(:nonce)
-      nonce_timeout  = options.delete(:nonce_timeout) || Spamtrap.nonce_timeout
-      mutate_enabled = options.delete(:mutate)
+      # Capture explicit per-call values; use sentinel so globals are read
+      # at request time rather than at class definition time.
+      nonce_opt   = options.key?(:nonce)         ? options.delete(:nonce)         : :global
+      timeout_opt = options.key?(:nonce_timeout) ? options.delete(:nonce_timeout) : :global
+      mutate_opt  = options.key?(:mutate)        ? options.delete(:mutate)        : :global
 
       before_action(options) do |controller|
         controller.instance_eval(&block) if block_given?
         controller.instance_eval do
+          nonce_enabled  = nonce_opt   == :global ? Spamtrap.nonce         : nonce_opt
+          nonce_timeout  = timeout_opt == :global ? Spamtrap.nonce_timeout : timeout_opt
+          mutate_enabled = mutate_opt  == :global ? Spamtrap.mutate        : mutate_opt
+
           spamtrap_remap_params if mutate_enabled
 
           if params[honeypot].present?

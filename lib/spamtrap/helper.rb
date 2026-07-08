@@ -38,8 +38,8 @@ class ActionView::Helpers::FormBuilder
   prepend Spamtrap::FormBuilderMutation
 
   def spamtrap(parameter = 'spamtrap', options = {})
-    mutate = options.delete(:mutate)
-    nonce  = options.delete(:nonce)
+    mutate = options.key?(:mutate) ? options.delete(:mutate) : Spamtrap.mutate
+    nonce  = options.key?(:nonce)  ? options.delete(:nonce)  : Spamtrap.nonce
     options.reverse_merge!(class: 'spamtrap')
 
     if mutate
