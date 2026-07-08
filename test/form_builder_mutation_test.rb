@@ -30,9 +30,9 @@ class FormBuilderMutationTest < ActionView::TestCase
     f   = build_form_builder(msg)
     f.spamtrap(:trap, mutate: true)
 
-    assert_match 'Alice', f.text_field(:name)
-    assert_match 'alice@example.com', f.email_field(:email)
-    assert_match 'Hello', f.text_area(:body)
+    assert_includes f.text_field(:name), 'Alice'
+    assert_includes f.email_field(:email), 'alice@example.com'
+    assert_includes f.text_area(:body), 'Hello'
   end
 
   def test_encrypted_field_name_is_used_in_html
