@@ -50,6 +50,10 @@ module Spamtrap
             #   2. activerecord.attributes.Model.field (ActiveRecord models)
             #   3. helpers.label.object_name.field (plain objects / form_with)
             #   4. humanize fallback
+            # Discard any explicit nil that a subclass may have passed through
+            # (e.g. `super(method, nil, options)`) so it does not survive as a
+            # spurious positional argument in the final super call.
+            args.compact!
             unless args.first.is_a?(String)
               human_text =
                 if object.respond_to?(:to_model)

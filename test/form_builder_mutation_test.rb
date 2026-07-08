@@ -133,6 +133,38 @@ class FormBuilderMutationTest < ActionView::TestCase
     assert_match(/selected.*CA|CA.*selected/, html)
   end
 
+  # --- label ---
+
+  def test_label_does_not_raise_when_mutate_is_true
+    msg = Message.new('Alice', 'alice@example.com', 'Hello')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    assert_nothing_raised { f.label(:name) }
+  end
+
+  def test_label_with_explicit_nil_text_does_not_raise
+    # Regression: a subclass that calls super(method, nil, options) used to
+    # produce "wrong number of arguments (given 4, expected 1..3)" because the
+    # nil survived as a positional argument alongside the auto-generated text.
+    msg  = Message.new('Alice', 'alice@example.com', 'Hello')
+    base = build_form_builder(msg)
+    base.spamtrap(:trap, mutate: true)
+
+    # Simulate what a subclass does: call label with nil text explicitly.
+    assert_nothing_raised { base.label(:name, nil, class: 'my-label') }
+  end
+
+  def test_label_with_explicit_nil_text_uses_humanized_fallback
+    msg  = Message.new('Alice', 'alice@example.com', 'Hello')
+    base = build_form_builder(msg)
+    base.spamtrap(:trap, mutate: true)
+
+    html = base.label(:name, nil, class: 'my-label')
+
+    assert_includes html, 'Name'
+  end
+
   private
 
   # ActionView::TestCase helpers expect a #request method; provide a stub.
