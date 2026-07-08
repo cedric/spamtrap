@@ -31,9 +31,40 @@ Now you just need to hide the spamtrap from your real users by adding this to yo
 
 The spamtrap mix-in can also take an optional block, where you can do more advance things -- like swapping the honeypot with a real form parameter.
 
+=== Replay Attack Protection (Nonce)
+
+Enable cryptographic nonce validation to prevent replay attacks. The nonce is an HMAC-SHA256
+digest of the form submission timestamp and the client IP address, keyed with
+<tt>Rails.application.secret_key_base</tt>. Submissions with an expired or tampered nonce are
+silently discarded with a 200 response.
+
+Enable it per-controller:
+
+  class CommentsController < ApplicationController
+    spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, only: %i(create update)
+  end
+
+And add the nonce fields to your form:
+
+  - form_for @comment do |f|
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, class: 'reindeer_jerky'
+
+Override the timeout for a specific controller action (accepts any value in seconds, or an
+ActiveSupport duration):
+
+  spamtrap :field, nonce: true, nonce_timeout: 15.minutes, only: %i(create)
+
+Set a global default timeout in an initializer (default is 1800 seconds / 30 minutes):
+
+  # config/initializers/spamtrap.rb
+  Spamtrap.nonce_timeout = 1.hour
+
+Note: because the nonce binds to the client IP, users whose IP address changes between page load
+and form submission (e.g. mobile network handoffs) will be rejected. This is an acceptable
+trade-off for spam protection but may not suit all deployments.
+
 === To Do
 
-- Add a cryptographic nonce to prevent replay attacks. It would probably be an MD5 hash consisting of a timestamp, ip address and a secret token. The timeout would be configurable.
 - Consider field name mutation throughout form.
 
 === License
