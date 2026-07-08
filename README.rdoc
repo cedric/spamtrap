@@ -149,6 +149,9 @@ Mutation can be combined with the nonce for full replay and bot protection:
 Mutation propagates automatically to <tt>fields_for</tt> nested builders, so nested
 attributes forms are mutated at every level without any additional configuration.
 
+Model-backed forms remain fully supported: helpers still pre-populate from model values while
+rendering encrypted field names in the HTML.
+
 === License
 
 (The MIT License)
