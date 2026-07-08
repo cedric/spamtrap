@@ -15,6 +15,22 @@ module Spamtrap
         super(field, *args, &blk)
       end
     end
+
+    def initialize(object_name, object, template, options)
+      super
+      @spamtrap_salt = options[:spamtrap_salt] if options[:spamtrap_salt]
+    end
+
+    def fields_for(record_name, record_object = nil, fields_options = {}, &block)
+      if @spamtrap_salt
+        if record_object.is_a?(Hash) && record_object.extractable_options?
+          record_object = record_object.merge(spamtrap_salt: @spamtrap_salt)
+        else
+          fields_options = fields_options.merge(spamtrap_salt: @spamtrap_salt)
+        end
+      end
+      super(record_name, record_object, fields_options, &block)
+    end
   end
 end
 

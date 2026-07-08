@@ -18,6 +18,7 @@ Rails.application.routes.draw do
   post 'nonce/create',         to: 'nonce#create'
   post 'nonce_timeout/create', to: 'nonce_timeout#create'
   post 'mutation/create',      to: 'mutation#create'
+  post 'nested_mutation/create', to: 'nested_mutation#create'
 end
 
 class ActionController::TestCase
