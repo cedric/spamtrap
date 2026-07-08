@@ -1,6 +1,16 @@
 == Spamtrap
 
-This is a simple {spamtrap}[http://en.wikipedia.org/wiki/Spamtrap] to fight {spamdexing}[http://en.wikipedia.org/wiki/Spamdexing]. You can create bogus form fields ({honeypots}[http://en.wikipedia.org/wiki/Honeypot_%28computing%29]) that will be filled-in by spambots. When these forms are submitted, the content will be discarded while still returning a 200 response.
+Spamtrap is a Rails gem that protects forms from spambots through three complementary mechanisms:
+
+- *Honeypot fields* — hidden textarea fields that real users never touch. Bots that fill them in
+  are silently discarded with a <tt>200 OK</tt> response.
+- *Cryptographic nonce* — an HMAC-SHA256 token binding each submission to a timestamp and client
+  IP. Replayed or expired submissions are rejected before reaching the controller.
+- *Field name mutation* — all form field names are AES-128-GCM encrypted on every page render,
+  so bots cannot target fields by recognizable names like <tt>email</tt> or <tt>body</tt>. The
+  controller remaps them back transparently; no changes to application code are required.
+
+Each feature is opt-in and can be used independently or combined.
 
 === Installation
 
@@ -8,15 +18,21 @@ Add the following to your Gemfile:
 
   gem 'spamtrap'
 
-=== Example
+=== Honeypot
 
-Declare the controller actions you want the spamtrap enabled for:
+A hidden textarea is added to the form with a deliberately enticing name. Real users never see
+or interact with it (it is hidden via CSS). Spambots, which auto-fill all visible and hidden
+fields, will populate it. When the form is submitted with a non-empty honeypot field, spamtrap
+silently discards the submission and returns a <tt>200 OK</tt> response — indistinguishable
+from a successful submission to the bot.
+
+Declare the controller actions you want protected:
 
   class CommentsController < ApplicationController
     spamtrap :sarah_palin_walks_with_dinosaurs, only: %i(create update)
   end
 
-In your views, add a call to the "spamtrap" form builder to your forms to output the honeypot fields:
+Add the honeypot field to your form using the <tt>f.spamtrap</tt> form builder helper:
 
   - form_for @comment do |f|
     = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
@@ -25,16 +41,80 @@ In your views, add a call to the "spamtrap" form builder to your forms to output
       = f.text_area :body
     = f.submit
 
-Now you just need to hide the spamtrap from your real users by adding this to your CSS:
+Hide it from real users with CSS:
 
   .reindeer_jerky { display: none; }
 
-The spamtrap mix-in can also take an optional block, where you can do more advance things -- like swapping the honeypot with a real form parameter.
+The macro accepts an optional block for advanced use cases, such as swapping the honeypot with
+a real form parameter at runtime.
 
-=== To Do
+=== Replay Attack Protection (Nonce)
 
-- Add a cryptographic nonce to prevent replay attacks. It would probably be an MD5 hash consisting of a timestamp, ip address and a secret token. The timeout would be configurable.
-- Consider field name mutation throughout form.
+Enable cryptographic nonce validation to prevent replay attacks. The nonce is an HMAC-SHA256
+digest of the form submission timestamp and the client IP address, keyed with
+<tt>Rails.application.secret_key_base</tt>. Submissions with an expired or tampered nonce are
+silently discarded with a 200 response.
+
+Enable it per-controller:
+
+  class CommentsController < ApplicationController
+    spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, only: %i(create update)
+  end
+
+And add the nonce fields to your form:
+
+  - form_for @comment do |f|
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, nonce: true, class: 'reindeer_jerky'
+
+Override the timeout for a specific controller action (accepts any value in seconds, or an
+ActiveSupport duration):
+
+  spamtrap :field, nonce: true, nonce_timeout: 15.minutes, only: %i(create)
+
+Set a global default timeout in an initializer (default is 1800 seconds / 30 minutes):
+
+  # config/initializers/spamtrap.rb
+  Spamtrap.nonce_timeout = 1.hour
+
+Note: because the nonce binds to the client IP, users whose IP address changes between page load
+and form submission (e.g. mobile network handoffs) will be rejected. This is an acceptable
+trade-off for spam protection but may not suit all deployments.
+
+=== Field Name Mutation
+
+Enable field name mutation to make all form fields unrecognizable in HTML source. Every field
+is encrypted with AES-128-GCM using a random per-render salt, so field names change on every
+page load. The controller decrypts and remaps them transparently before the action runs — no
+changes to <tt>params.require(...).permit(...)</tt> or any other controller code required.
+
+Enable mutation in the controller:
+
+  class CommentsController < ApplicationController
+    spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true, only: %i(create update)
+  end
+
+Enable it in the view by passing <tt>mutate: true</tt> to <tt>f.spamtrap</tt>:
+
+  - form_for @comment do |f|
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, mutate: true
+    = f.label :body
+    = f.text_area :body
+    = f.label :email
+    = f.email_field :email
+    = f.submit
+
+The rendered HTML will contain opaque encrypted field names (~28 characters each) instead of
+<tt>body</tt>, <tt>email</tt>, etc. The encryption key is derived from
+<tt>secret_key_base</tt> so only the originating server can decrypt submissions.
+
+Mutation can be combined with the nonce for full replay and bot protection:
+
+  spamtrap :field, mutate: true, nonce: true, only: %i(create update)
+
+  = f.spamtrap :field, mutate: true, nonce: true
+
+Mutation propagates automatically to <tt>fields_for</tt> nested builders, so nested
+attributes forms are mutated at every level without any additional configuration.
 
 === License
 
@@ -60,4 +140,3 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
