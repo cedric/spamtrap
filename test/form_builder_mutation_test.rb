@@ -100,7 +100,7 @@ class FormBuilderMutationTest < ActionView::TestCase
     f   = build_form_builder(msg)
     f.spamtrap(:trap, mutate: true)
 
-    assert_match 'checked', f.check_box(:active)
+    assert_includes f.check_box(:active), 'checked'
   end
 
   def test_check_box_unchecked_when_model_value_is_false
