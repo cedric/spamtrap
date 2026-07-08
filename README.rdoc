@@ -32,6 +32,19 @@ Declare the controller actions you want protected:
     spamtrap :sarah_palin_walks_with_dinosaurs, only: %i(create update)
   end
 
+Add the honeypot field to your form using the <tt>f.spamtrap</tt> form builder helper:
+
+  - form_for @comment do |f|
+    = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
+    %fieldset
+      = f.label :body
+      = f.text_area :body
+    = f.submit
+
+Hide it from real users with CSS:
+
+  .reindeer_jerky { display: none; }
+
 The macro accepts an optional block for advanced use cases, such as swapping the honeypot with
 a real form parameter at runtime.
 
@@ -102,22 +115,6 @@ Mutation can be combined with the nonce for full replay and bot protection:
 
 Mutation propagates automatically to <tt>fields_for</tt> nested builders, so nested
 attributes forms are mutated at every level without any additional configuration.
-
-=== Example
-
-In your views, add a call to the "spamtrap" form builder to your forms to output the honeypot
-fields:
-
-  - form_for @comment do |f|
-    = f.spamtrap :sarah_palin_walks_with_dinosaurs, class: 'reindeer_jerky'
-    %fieldset
-      = f.label :body
-      = f.text_area :body
-    = f.submit
-
-Now you just need to hide the spamtrap from your real users by adding this to your CSS:
-
-  .reindeer_jerky { display: none; }
 
 === License
 
