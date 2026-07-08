@@ -1,5 +1,3 @@
-[![Gem Version](https://badge.fury.io/rb/spamtrap.svg)](https://badge.fury.io/rb/spamtrap)
-
 == Spamtrap
 
 Spamtrap is a Rails gem that protects forms from spambots through three complementary mechanisms:
