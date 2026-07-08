@@ -27,9 +27,40 @@ take precedence, including an explicit <tt>false</tt> that overrides a global <t
   Spamtrap.nonce         = true       # require nonce on all spamtrap-protected actions
   Spamtrap.nonce_timeout = 15.minutes # default 1800 seconds (30 minutes)
   Spamtrap.mutate        = true       # mutate field names on all protected forms
+  Spamtrap.on_trap       = ->(reason:, request:) { ... }  # optional trap callback
 
 These settings are read at request time, so changes take effect immediately without
 restarting the server.
+
+==== Trap callback (<tt>on_trap</tt>)
+
+An optional callback is invoked whenever the spamtrap fires — whether via the honeypot field
+or an invalid nonce. Use it for logging, metrics, rate-limiting, or any other custom behaviour.
+
+Set a global callback in the initializer:
+
+  # config/initializers/spamtrap.rb
+  Spamtrap.on_trap = lambda do |reason:, request:|
+    # reason is :honeypot or :nonce
+    Rails.logger.warn "[Spamtrap] #{reason} trap fired from #{request.remote_ip} on #{request.path}"
+    StatsD.increment('spamtrap.triggered', tags: ["reason:#{reason}"])
+  end
+
+Or override per declaration (takes precedence over the global callback):
+
+  spamtrap :comment, only: :create, on_trap: ->(reason:, request:) {
+    Honeybadger.notify("Spamtrap fired", context: { reason: reason, ip: request.remote_ip })
+  }
+
+Callback arguments:
+
+- <tt>reason:</tt> — <tt>:honeypot</tt> when the hidden field was filled; <tt>:nonce</tt>
+  when the HMAC nonce was missing, invalid, or expired.
+- <tt>request:</tt> — the <tt>ActionDispatch::Request</tt> object (IP, path, headers, etc.).
+
+Exceptions raised inside the callback are rescued and logged; a broken callback never prevents
+the silent <tt>head 200</tt> discard. If <tt>on_trap</tt> is not set, behaviour is unchanged
+from earlier versions.
 
 === Honeypot
 

@@ -2,7 +2,8 @@ require 'openssl'
 
 module Spamtrap
   class << self
-    attr_writer :nonce, :nonce_timeout, :mutate
+    attr_accessor :on_trap
+    attr_writer   :nonce, :nonce_timeout, :mutate
 
     def nonce
       @nonce || false
