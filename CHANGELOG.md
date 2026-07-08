@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] - 2026-07-08
+
+### Fixed
+- Arity error in `FormBuilderMutation#label` when a subclass or custom form builder passes an explicit `nil` as the text argument. The label now correctly treats explicit `nil` the same as an omitted text argument and resolves the display text from the real field name.
+
+## [0.3.4] - 2026-07-08
+
+### Fixed
+- Labels rendered with `mutate: true` were displaying the encrypted field name ciphertext as their visible text. The label helper now resolves the display text from the **real** field name before substituting the encrypted form, following Rails' standard resolution order:
+  1. Explicit text argument (kept as-is)
+  2. `activerecord.attributes.Model.field` I18n translation (ActiveRecord models)
+  3. `helpers.label.object_name.field` I18n scope (plain objects)
+  4. `humanize` fallback
+  The `for` attribute still uses the encrypted name so it correctly associates with the mutated input.
+
 ## [0.3.3] - 2026-07-08
 
 ### Fixed
