@@ -20,11 +20,12 @@ module Spamtrap
       TokenHelper.new.spamtrap_decrypt_field(token, timestamp.to_s)
     end
 
-    def spamtrap_nonce_params(honeypot:, ip:, at: Time.now.to_i, nonce_id: SecureRandom.hex(16))
+    # at defaults 5s in the past so Spamtrap.min_fill_time (default 1s) doesn't trap these tokens.
+    def spamtrap_nonce_params(honeypot:, ip:, at: Time.now.to_i - 5, nonce_id: SecureRandom.hex(16), bind_ip: Spamtrap.nonce_bind_ip)
       {
         spamtrap_timestamp: at,
         spamtrap_nonce_id:  nonce_id,
-        spamtrap_nonce:     TokenHelper.new.spamtrap_nonce_digest(at, ip, honeypot, nonce_id)
+        spamtrap_nonce:     TokenHelper.new.spamtrap_nonce_digest(at, ip, honeypot, nonce_id, bind_ip: bind_ip)
       }
     end
 
@@ -32,10 +33,11 @@ module Spamtrap
     # the honeypot field, plus whatever spamtrap_timestamp/nonce fields the declared
     # options require, so the request clears the whole gauntlet in one call. `fields:`
     # is merged in as-is, or through spamtrap_mutate first when `mutate:` is truthy.
-    def spamtrap_params(honeypot:, ip: '0.0.0.0', nonce: false, mutate: false, at: Time.now.to_i, fields: nil)
+    # at defaults 5s in the past so Spamtrap.min_fill_time (default 1s) doesn't trap these tokens.
+    def spamtrap_params(honeypot:, ip: '0.0.0.0', nonce: false, mutate: false, at: Time.now.to_i - 5, bind_ip: Spamtrap.nonce_bind_ip, fields: nil)
       params = {}
       if nonce
-        params.merge!(spamtrap_nonce_params(honeypot: honeypot, ip: ip, at: at))
+        params.merge!(spamtrap_nonce_params(honeypot: honeypot, ip: ip, at: at, bind_ip: bind_ip))
       elsif mutate
         params[:spamtrap_timestamp] = at
       end

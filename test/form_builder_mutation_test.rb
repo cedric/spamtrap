@@ -255,6 +255,54 @@ class FormBuilderMutationTest < ActionView::TestCase
     assert_match(/aria-hidden="true"/, html)
   end
 
+  # --- honeypot name mutation ---
+
+  def test_honeypot_name_is_encrypted_when_mutate_is_true
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, mutate: true)
+
+    name      = html[/<textarea[^>]*\sname="([^"]+)"/, 1]
+    timestamp = f.instance_variable_get(:@spamtrap_timestamp)
+
+    refute_equal 'trap', name
+    assert_equal :trap, spamtrap_decrypt(name, timestamp)
+  end
+
+  def test_honeypot_name_stays_plain_when_mutate_is_false
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, mutate: false)
+
+    assert_match(/<textarea[^>]*\sname="trap"/, html)
+  end
+
+  def test_honeypot_name_stays_plain_without_mutation_option
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap)
+
+    assert_match(/<textarea[^>]*\sname="trap"/, html)
+  end
+
+  def test_honeypot_hidden_fields_keep_plain_names_when_mutate_is_true
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, mutate: true)
+
+    assert_match(/name="spamtrap_timestamp"/, html)
+  end
+
+  def test_honeypot_hidden_nonce_fields_keep_plain_names_when_mutate_and_nonce_are_true
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, mutate: true, nonce: true)
+
+    assert_match(/name="spamtrap_timestamp"/, html)
+    assert_match(/name="spamtrap_nonce_id"/, html)
+    assert_match(/name="spamtrap_nonce"/, html)
+  end
+
   # --- spamtrap: options at builder construction (task 2) ---
 
   def test_form_with_spamtrap_option_mutates_fields_rendered_before_f_spamtrap

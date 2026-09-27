@@ -1392,6 +1392,161 @@ class TrapResponseOnTrapRedirectControllerTest < ActionController::TestCase
   end
 end
 
+# The honeypot's own field name is encrypted under mutate: true/:strict; posting it
+# filled under its encrypted name must still trap, and posting it empty must still pass.
+class StrictMutationHoneypotOwnNameTest < ActionController::TestCase
+  tests StrictMutationController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << { reason: reason, ip: request.remote_ip } }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_honeypot_filled_under_its_encrypted_name_is_trapped
+    timestamp     = Time.now.to_i
+    honeypot_name = spamtrap_token('trap_field', timestamp)
+    body_token    = spamtrap_token('body', timestamp)
+
+    post :create, params: {
+      honeypot_name => 'bot text',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    assert_empty response.body
+    assert_equal 1, @calls.size
+    assert_equal :honeypot, @calls.first[:reason]
+  end
+
+  def test_honeypot_empty_under_its_encrypted_name_passes
+    timestamp     = Time.now.to_i
+    honeypot_name = spamtrap_token('trap_field', timestamp)
+    body_token    = spamtrap_token('body', timestamp)
+
+    post :create, params: {
+      honeypot_name => '',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    assert_equal 'body', response.body
+    assert_empty @calls
+  end
+end
+
+# Same as above, on the lenient (mutate: :lenient) controller: mutate: :lenient still
+# mutates the honeypot's own name (only :strict/:true adds the plaintext-field trap).
+class LenientMutationHoneypotOwnNameTest < ActionController::TestCase
+  tests MutationController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << { reason: reason, ip: request.remote_ip } }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_honeypot_filled_under_its_encrypted_name_is_trapped
+    timestamp     = Time.now.to_i
+    honeypot_name = spamtrap_token('trap_field', timestamp)
+    body_token    = spamtrap_token('body', timestamp)
+
+    post :create, params: {
+      honeypot_name => 'bot text',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    assert_empty response.body
+    assert_equal 1, @calls.size
+    assert_equal :honeypot, @calls.first[:reason]
+  end
+
+  def test_honeypot_empty_under_its_encrypted_name_passes
+    timestamp     = Time.now.to_i
+    honeypot_name = spamtrap_token('trap_field', timestamp)
+    body_token    = spamtrap_token('body', timestamp)
+
+    post :create, params: {
+      honeypot_name => '',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    assert_equal 'body', response.body
+    assert_empty @calls
+  end
+end
+
+# Render-to-parse: the honeypot textarea f.spamtrap renders under mutate: true must post
+# back under its encrypted name and still be caught, mirroring MutationRenderRoundTripTest.
+class MutationRenderRoundTripHoneypotOwnNameTest < ActionController::TestCase
+  tests MutationEchoController
+
+  def render_form
+    ActionController::Base.render(inline: <<~ERB)
+      <%= form_for :comment, url: '/mutation_echo/create' do |f| %>
+        <%= f.spamtrap :trap_field, mutate: true %>
+        <%= f.text_field :body %>
+      <% end %>
+    ERB
+  end
+
+  def test_rendered_honeypot_filled_under_its_encrypted_name_is_trapped
+    html = render_form
+
+    honeypot_tag  = html[/<textarea[^>]*>/]
+    honeypot_name = honeypot_tag[/name="([^"]+)"/, 1]
+    timestamp_tag = html[/<input[^>]*name="spamtrap_timestamp"[^>]*>/]
+    timestamp     = timestamp_tag[/value="([^"]*)"/, 1]
+    body_tag      = html[/<input[^>]*name="comment\[[^\]]+\]"[^>]*>/]
+    body_token    = body_tag[/name="comment\[([^\]]+)\]"/, 1]
+
+    refute_equal 'trap_field', honeypot_name
+    assert_equal :trap_field, spamtrap_decrypt(honeypot_name, timestamp)
+
+    post :create, params: {
+      honeypot_name => 'bot text',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'hello' }
+    }
+
+    assert_response :ok
+    assert_empty response.body
+  end
+
+  def test_rendered_honeypot_empty_under_its_encrypted_name_passes
+    html = render_form
+
+    honeypot_tag  = html[/<textarea[^>]*>/]
+    honeypot_name = honeypot_tag[/name="([^"]+)"/, 1]
+    timestamp_tag = html[/<input[^>]*name="spamtrap_timestamp"[^>]*>/]
+    timestamp     = timestamp_tag[/value="([^"]*)"/, 1]
+    body_tag      = html[/<input[^>]*name="comment\[[^\]]+\]"[^>]*>/]
+    body_token    = body_tag[/name="comment\[([^\]]+)\]"/, 1]
+
+    post :create, params: {
+      honeypot_name => '',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'hello' }
+    }
+
+    assert_response :ok
+    parsed = JSON.parse(response.body)
+    assert_equal 'hello', parsed['body']
+  end
+end
+
 class TrapResponseOnTrapPayloadControllerTest < ActionController::TestCase
   tests TrapResponseOnTrapPayloadController
 
@@ -1498,5 +1653,344 @@ class SpamtrapMutateTestHelperTest < ActionController::TestCase
     parsed = JSON.parse(response.body)
     assert_equal 'Hello', parsed['comment']['body']
     assert_equal 'test@example.com', parsed['comment']['email']
+  end
+end
+
+# Controllers for the min_fill_time tests.
+class FillTimeController < ActionController::Base
+  spamtrap :trap_field, nonce: true, min_fill_time: 1, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class FillTimeDisabledController < ActionController::Base
+  spamtrap :trap_field, nonce: true, min_fill_time: false, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+# No per-action min_fill_time, so it relies entirely on Spamtrap.min_fill_time.
+class FillTimeGlobalController < ActionController::Base
+  spamtrap :trap_field, nonce: true, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class FillTimeControllerTest < ActionController::TestCase
+  tests FillTimeController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << reason }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_nonce_minted_just_now_traps_as_too_fast
+    timestamp = Time.now.to_i
+    post :create, params: { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:too_fast], @calls
+  end
+
+  def test_nonce_minted_two_seconds_ago_passes
+    timestamp = Time.now.to_i - 2
+    post :create, params: { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+
+  def test_filled_honeypot_reports_honeypot_not_too_fast
+    timestamp = Time.now.to_i
+    post :create, params: { trap_field: 'spam' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:honeypot], @calls
+  end
+end
+
+class FillTimeDisabledControllerTest < ActionController::TestCase
+  tests FillTimeDisabledController
+
+  def test_min_fill_time_false_on_the_action_passes_at_now
+    timestamp = Time.now.to_i
+    post :create, params: { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+end
+
+class FillTimeGlobalControllerTest < ActionController::TestCase
+  tests FillTimeGlobalController
+
+  teardown do
+    # Restore the suite-wide baseline (test_helper.rb), not the gem's own default of 1.
+    Spamtrap.min_fill_time = false
+  end
+
+  def test_global_min_fill_time_applies_to_an_action_with_no_per_action_value
+    Spamtrap.min_fill_time = 3
+    timestamp = Time.now.to_i - 1
+    post :create, params: { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    assert_response :ok
+    assert_empty response.body
+  end
+end
+
+# Controller for the trap.spamtrap ActiveSupport::Notifications test.
+class InstrumentationControllerTest < ActionController::TestCase
+  tests HoneypotController
+
+  def test_trap_publishes_a_notification_event
+    events   = []
+    callback = ->(*, payload) { events << payload }
+
+    ActiveSupport::Notifications.subscribed(callback, 'trap.spamtrap') do
+      post :create, params: { trap_field: 'spam' }
+    end
+
+    assert_equal 1, events.size
+    payload = events.first
+    assert_equal :honeypot, payload[:reason]
+    assert_equal 'honeypot', payload[:controller]
+    assert_equal 'create', payload[:action]
+    assert_equal '0.0.0.0', payload[:ip]
+  end
+
+  def test_legitimate_request_publishes_no_notification
+    events   = []
+    callback = ->(*, payload) { events << payload }
+
+    ActiveSupport::Notifications.subscribed(callback, 'trap.spamtrap') do
+      post :create, params: { trap_field: '' }
+    end
+
+    assert_empty events
+  end
+end
+
+class NormalizeIpTest < Minitest::Test
+  def test_true_mode_returns_the_full_ip
+    assert_equal '10.1.2.3', Spamtrap.normalize_ip('10.1.2.3', true)
+  end
+
+  def test_false_mode_returns_an_empty_string
+    assert_equal '', Spamtrap.normalize_ip('10.1.2.3', false)
+  end
+
+  def test_prefix_mode_masks_ipv4_to_a_slash_24
+    assert_equal '10.1.2.0/24', Spamtrap.normalize_ip('10.1.2.99', :prefix)
+  end
+
+  def test_prefix_mode_unmaps_an_ipv4_mapped_ipv6_address_first
+    assert_equal '10.1.2.0/24', Spamtrap.normalize_ip('::ffff:10.1.2.99', :prefix)
+  end
+
+  def test_default_mode_reads_spamtrap_nonce_bind_ip
+    Spamtrap.nonce_bind_ip = :prefix
+    assert_equal '10.1.2.0/24', Spamtrap.normalize_ip('10.1.2.99')
+  ensure
+    Spamtrap.nonce_bind_ip = nil
+  end
+end
+
+class ThrottleKeyTest < Minitest::Test
+  FakeRequest = Struct.new(:remote_ip)
+
+  def test_builds_a_key_from_the_normalized_ip
+    assert_equal 'spamtrap:10.1.2.3', Spamtrap.throttle_key(FakeRequest.new('10.1.2.3'))
+  end
+
+  def test_uses_the_configured_bind_ip_mode
+    Spamtrap.nonce_bind_ip = :prefix
+    assert_equal 'spamtrap:10.1.2.0/24', Spamtrap.throttle_key(FakeRequest.new('10.1.2.99'))
+  ensure
+    Spamtrap.nonce_bind_ip = nil
+  end
+end
+
+# Task 4: key rotation. secret_key_base/previous_secret_key_base let a token minted under
+# the old secret keep working while both are configured, and stop working once it isn't.
+class KeyRotationTest < Minitest::Test
+  include Spamtrap::TestHelper
+
+  OLD_SECRET = 'old' * 22
+  NEW_SECRET = 'new' * 22
+
+  def teardown
+    Spamtrap.secret_key_base = nil
+    Spamtrap.previous_secret_key_base = nil
+  end
+
+  def test_mutation_token_decrypts_with_the_previous_secret_after_rotation
+    Spamtrap.secret_key_base = OLD_SECRET
+    timestamp = Time.now.to_i
+    token = spamtrap_token('body', timestamp)
+
+    Spamtrap.secret_key_base = NEW_SECRET
+    Spamtrap.previous_secret_key_base = OLD_SECRET
+
+    assert_equal :body, spamtrap_decrypt(token, timestamp)
+  end
+
+  def test_mutation_token_fails_to_decrypt_without_the_previous_secret
+    Spamtrap.secret_key_base = OLD_SECRET
+    timestamp = Time.now.to_i
+    token = spamtrap_token('body', timestamp)
+
+    Spamtrap.secret_key_base = NEW_SECRET
+
+    assert_nil spamtrap_decrypt(token, timestamp)
+  end
+end
+
+class NonceKeyRotationControllerTest < ActionController::TestCase
+  tests NonceController
+
+  OLD_SECRET = 'old' * 22
+  NEW_SECRET = 'new' * 22
+
+  teardown do
+    Spamtrap.secret_key_base = nil
+    Spamtrap.previous_secret_key_base = nil
+  end
+
+  def test_nonce_minted_under_the_old_secret_verifies_after_rotation
+    Spamtrap.secret_key_base = OLD_SECRET
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+
+    Spamtrap.secret_key_base = NEW_SECRET
+    Spamtrap.previous_secret_key_base = OLD_SECRET
+
+    post :create, params: params
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+
+  def test_nonce_minted_under_the_old_secret_fails_without_the_previous_secret
+    Spamtrap.secret_key_base = OLD_SECRET
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+
+    Spamtrap.secret_key_base = NEW_SECRET
+
+    post :create, params: params
+    assert_response :ok
+    assert_empty response.body
+  end
+end
+
+# Task 5: nonce_bind_ip per action.
+class NonceBindIpActionController < ActionController::Base
+  spamtrap :trap_field, nonce: true, nonce_bind_ip: :prefix, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class NonceBindIpActionControllerTest < ActionController::TestCase
+  tests NonceBindIpActionController
+
+  def test_per_action_prefix_binding_accepts_a_different_ip_in_the_same_slash_24_while_global_stays_true
+    assert_equal true, Spamtrap.nonce_bind_ip
+
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '10.1.2.3', at: timestamp, bind_ip: :prefix)
+    )
+
+    @request.remote_addr = '10.1.2.99'
+    post :create, params: params
+
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+end
+
+# Task 5: API controllers.
+class ApiHoneypotController < ActionController::API
+  spamtrap :trap_field, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class ApiHoneypotControllerTest < ActionController::TestCase
+  tests ApiHoneypotController
+
+  def test_filled_honeypot_traps
+    post :create, params: { trap_field: 'spam' }
+    assert_response :ok
+    assert_empty response.body
+  end
+
+  def test_empty_honeypot_passes
+    post :create, params: { trap_field: '' }
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+end
+
+# Mutation-only forms have no nonce path, so the fill-time check runs on its own branch.
+class MutationOnlyFillTimeTest < ActionController::TestCase
+  tests StrictMutationController
+
+  setup do
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+    Spamtrap.min_fill_time = 1
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+    Spamtrap.min_fill_time = false # suite-wide baseline from test_helper
+  end
+
+  def post_with_timestamp(timestamp)
+    post :create, params: {
+      trap_field: '',
+      spamtrap_timestamp: timestamp,
+      comment: { spamtrap_token('body', timestamp) => 'Hello' }
+    }
+  end
+
+  def test_submission_in_the_same_second_as_render_is_too_fast
+    post_with_timestamp(Time.now.to_i)
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:too_fast], @reasons
+  end
+
+  def test_submission_two_seconds_after_render_passes
+    post_with_timestamp(Time.now.to_i - 2)
+    assert_response :ok
+    assert_equal 'body', response.body
+    assert_empty @reasons
   end
 end

@@ -1,4 +1,5 @@
 require 'openssl'
+require 'ipaddr'
 
 module Spamtrap
   class << self
@@ -69,6 +70,52 @@ module Spamtrap
     def nonce_bind_ip
       @nonce_bind_ip.nil? ? true : @nonce_bind_ip
     end
+
+    attr_writer :min_fill_time
+
+    # Minimum seconds between render and submission a human needs; false or 0 disables. Default 1.
+    def min_fill_time
+      @min_fill_time.nil? ? 1 : @min_fill_time
+    end
+
+    attr_writer :secret_key_base
+
+    # The current HKDF source secret; defaults to the app's own so no setup is needed to opt in.
+    def secret_key_base
+      @secret_key_base || Rails.application.secret_key_base
+    end
+
+    attr_writer :previous_secret_key_base
+
+    # Set during a rotation window so tokens minted under the old secret still verify/decrypt.
+    def previous_secret_key_base
+      @previous_secret_key_base
+    end
+  end
+
+  # Normalises ip per mode: true keeps it as-is, :prefix masks to its /24 (IPv4) or /48 (IPv6)
+  # network (IPv4-mapped addresses unmapped first so they mask as IPv4), false discards it.
+  def self.normalize_ip(ip, mode = nonce_bind_ip)
+    case mode
+    when false
+      ''
+    when :prefix
+      begin
+        addr = IPAddr.new(ip.to_s)
+        addr = addr.native if addr.ipv4_mapped?
+        bits = addr.ipv4? ? 24 : 48
+        "#{addr.mask(bits)}/#{bits}"
+      rescue IPAddr::InvalidAddressError
+        ip.to_s
+      end
+    else
+      ip.to_s
+    end
+  end
+
+  # Key for Rack::Attack / Rails' rate_limit, scoped by the normalized client IP.
+  def self.throttle_key(request)
+    "spamtrap:#{normalize_ip(request.remote_ip)}"
   end
 
   # Wires the gem into Action Controller and Action View. The Railtie calls the two halves
@@ -80,6 +127,10 @@ module Spamtrap
 
   def self.install_controller!
     ActionController::Base.include Spamtrap::Controller unless ActionController::Base < Spamtrap::Controller
+    # const_defined?(false) avoids autoloading action_controller/api.rb for apps that never use it.
+    return unless ActionController.const_defined?(:API, false)
+
+    ActionController::API.include Spamtrap::Controller unless ActionController::API < Spamtrap::Controller
   end
 
   def self.install_form_builder!
