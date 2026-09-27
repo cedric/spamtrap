@@ -1,3 +1,4 @@
+ENV['RAILS_ENV'] ||= 'test' # integration tests go through the middleware stack, which blocks unknown hosts in development
 require 'rubygems'
 require 'rails'
 require 'action_controller'
@@ -17,7 +18,12 @@ end
 
 Rails.application.initialize!
 
+# Existing tests mint timestamps as Time.now.to_i; disable by default so they don't all become :too_fast.
+Spamtrap.min_fill_time = false
+
 Rails.application.routes.draw do
+  get  'integration/new',    to: 'integration#new'
+  post 'integration/create', to: 'integration#create'
   post 'honeypot/create',      to: 'honeypot#create'
   post 'nonce/create',         to: 'nonce#create'
   post 'nonce_timeout/create', to: 'nonce_timeout#create'
@@ -45,6 +51,11 @@ Rails.application.routes.draw do
   post 'strict_mutation_nonce/create',         to: 'strict_mutation_nonce#create'
   post 'mutation_expired_trap_response/create', to: 'mutation_expired_trap_response#create'
   post 'mutation_expired_on_trap/create',      to: 'mutation_expired_on_trap#create'
+  post 'fill_time/create',                     to: 'fill_time#create'
+  post 'fill_time_disabled/create',            to: 'fill_time_disabled#create'
+  post 'fill_time_global/create',              to: 'fill_time_global#create'
+  post 'nonce_bind_ip_action/create',          to: 'nonce_bind_ip_action#create'
+  post 'api_honeypot/create',                  to: 'api_honeypot#create'
 end
 
 class ActionController::TestCase

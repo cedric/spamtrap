@@ -9,79 +9,71 @@ module Spamtrap
     NONCE_LEN = 12
     TAG_LEN   = 16
 
-    private
-
-    def spamtrap_crypto_key
-      @spamtrap_crypto_key ||= OpenSSL::KDF.hkdf(
-        Rails.application.secret_key_base,
-        salt:   'spamtrap-mutation',
-        info:   '',
-        length: KEY_LEN,
-        hash:   'SHA256'
-      )
+    class << self
+      # HKDF-derives {mutation:, nonce:} keys, memoised per secret at module level so each
+      # request doesn't re-derive them; previous_secret_key_base is what keeps a rotation from
+      # orphaning in-flight forms.
+      def keys_for(secret)
+        @keys_cache ||= {}
+        @keys_cache[secret] ||= begin
+          derived = {
+            mutation: OpenSSL::KDF.hkdf(secret, salt: 'spamtrap-mutation', info: '', length: KEY_LEN, hash: 'SHA256'),
+            nonce:    OpenSSL::KDF.hkdf(secret, salt: 'spamtrap-nonce',    info: '', length: 32,       hash: 'SHA256')
+          }
+          # Cap at the two most recent secrets so a test suite rotating secrets can't grow this unboundedly.
+          @keys_cache.delete(@keys_cache.keys.first) while @keys_cache.size > 1
+          derived
+        end
+      end
     end
+
+    private
 
     # aad binds the token to the render timestamp so it can't be replayed under a different one.
     def spamtrap_encrypt_field(field_name, aad)
       cipher = OpenSSL::Cipher.new(CIPHER)
       cipher.encrypt
-      cipher.key = spamtrap_crypto_key
+      cipher.key = Spamtrap::Crypto.keys_for(Spamtrap.secret_key_base)[:mutation]
       cipher.iv  = iv = SecureRandom.bytes(NONCE_LEN)
       cipher.auth_data = aad.to_s
       ct = cipher.update(field_name.to_s) + cipher.final
       Base64.urlsafe_encode64(iv + ct + cipher.auth_tag(TAG_LEN), padding: false)
     end
 
+    # Tries the current secret, then the previous one (rotation window), before giving up.
     def spamtrap_decrypt_field(token, aad)
       raw = Base64.urlsafe_decode64(token)
       return nil unless raw.bytesize > NONCE_LEN + TAG_LEN
+
+      [Spamtrap.secret_key_base, Spamtrap.previous_secret_key_base].compact.each do |secret|
+        result = spamtrap_decrypt_raw(raw, aad, secret)
+        return result if result
+      end
+      nil
+    rescue ArgumentError
+      nil
+    end
+
+    def spamtrap_decrypt_raw(raw, aad, secret)
       iv  = raw[0, NONCE_LEN]
       ct  = raw[NONCE_LEN...-TAG_LEN]
       tag = raw[-TAG_LEN..]
       cipher = OpenSSL::Cipher.new(CIPHER)
       cipher.decrypt
-      cipher.key       = spamtrap_crypto_key
+      cipher.key       = Spamtrap::Crypto.keys_for(secret)[:mutation]
       cipher.iv        = iv
       cipher.auth_data = aad.to_s
       cipher.auth_tag  = tag
       (cipher.update(ct) + cipher.final).to_sym
-    rescue OpenSSL::Cipher::CipherError, ArgumentError
+    rescue OpenSSL::Cipher::CipherError
       nil
     end
 
-    def spamtrap_nonce_key
-      @spamtrap_nonce_key ||= OpenSSL::KDF.hkdf(
-        Rails.application.secret_key_base,
-        salt:   'spamtrap-nonce',
-        info:   '',
-        length: 32,
-        hash:   'SHA256'
-      )
-    end
-
     # v1: versions the message for future key rotation; honeypot scopes a token to one form.
-    def spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id)
-      OpenSSL::HMAC.hexdigest('SHA256', spamtrap_nonce_key, "v1:#{timestamp}:#{spamtrap_nonce_ip(ip)}:#{honeypot}:#{nonce_id}")
-    end
-
-    # Normalised here (not in helper.rb) so the view helper and controller agree on the
-    # bound value without either one duplicating Spamtrap.nonce_bind_ip's semantics.
-    def spamtrap_nonce_ip(ip)
-      case Spamtrap.nonce_bind_ip
-      when false
-        ''
-      when :prefix
-        begin
-          addr = IPAddr.new(ip.to_s)
-          addr = addr.native if addr.ipv4_mapped? # ::ffff:1.2.3.4 must mask as IPv4, not collapse into one /48
-          bits = addr.ipv4? ? 24 : 48
-          "#{addr.mask(bits)}/#{bits}"
-        rescue IPAddr::InvalidAddressError
-          ip.to_s
-        end
-      else
-        ip.to_s
-      end
+    # secret defaults to current but the caller retries with previous_secret_key_base on mismatch.
+    def spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id, bind_ip: Spamtrap.nonce_bind_ip, secret: Spamtrap.secret_key_base)
+      key = Spamtrap::Crypto.keys_for(secret)[:nonce]
+      OpenSSL::HMAC.hexdigest('SHA256', key, "v1:#{timestamp}:#{Spamtrap.normalize_ip(ip, bind_ip)}:#{honeypot}:#{nonce_id}")
     end
   end
 end

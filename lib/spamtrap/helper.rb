@@ -217,8 +217,9 @@ end
 # (via the Railtie in a Rails app) rather than by reopening the class at require time.
 module Spamtrap::FormBuilderHelper
   def spamtrap(parameter = 'spamtrap', options = {})
-    mutate = options.key?(:mutate) ? options.delete(:mutate) : spamtrap_option_default(:mutate)
-    nonce  = options.key?(:nonce)  ? options.delete(:nonce)  : spamtrap_option_default(:nonce)
+    mutate  = options.key?(:mutate)         ? options.delete(:mutate)         : spamtrap_option_default(:mutate)
+    nonce   = options.key?(:nonce)          ? options.delete(:nonce)          : spamtrap_option_default(:nonce)
+    bind_ip = options.key?(:nonce_bind_ip)  ? options.delete(:nonce_bind_ip)  : spamtrap_option_default(:nonce_bind_ip)
     options.reverse_merge!(class: 'spamtrap', tabindex: -1, autocomplete: 'off', 'aria-hidden' => true, style: 'display:none')
 
     # One timestamp per render, shared by mutation tokens and the nonce HMAC, so the hidden
@@ -227,9 +228,13 @@ module Spamtrap::FormBuilderHelper
     timestamp = @spamtrap_timestamp || (Time.now.to_i if mutate || nonce)
     @spamtrap_timestamp = timestamp if mutate
 
-    @template.text_area_tag(parameter, nil, options) +
+    # Mutate the honeypot's own name too, or its static name is the one field a bot can
+    # learn to skip; id stays opaque (no stable_ids) since a stable honeypot id would out it.
+    honeypot_field = @spamtrap_timestamp ? spamtrap_token_for(parameter.to_s) : parameter
+
+    @template.text_area_tag(honeypot_field, nil, options) +
       ((mutate || nonce) ? @template.hidden_field_tag(:spamtrap_timestamp, timestamp) : ''.html_safe) +
-      (nonce ? spamtrap_nonce_fields(timestamp, parameter.to_s) : ''.html_safe)
+      (nonce ? spamtrap_nonce_fields(timestamp, parameter.to_s, bind_ip) : ''.html_safe)
   end
 
   private
@@ -242,14 +247,14 @@ module Spamtrap::FormBuilderHelper
     end
   end
 
-  def spamtrap_nonce_fields(timestamp, honeypot)
+  def spamtrap_nonce_fields(timestamp, honeypot, bind_ip)
     unless @template.respond_to?(:request) && @template.request
       raise Spamtrap::NoRequestError, 'Spamtrap nonce fields need a request; render the form inside a request or pass nonce: false'
     end
 
     ip       = @template.request.remote_ip
     nonce_id = SecureRandom.hex(16)
-    nonce    = spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id)
+    nonce    = spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id, bind_ip: bind_ip)
 
     @template.hidden_field_tag(:spamtrap_nonce_id, nonce_id) +
       @template.hidden_field_tag(:spamtrap_nonce, nonce)
