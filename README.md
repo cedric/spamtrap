@@ -27,6 +27,7 @@ defense on its own — read the guarantees below before relying on one.
 | Nonce (`nonce: :single_use`) | The above, plus: a given nonce is accepted once | Replay detection without a shared cache store; a `NullStore` accepts every write (see [Testing](#testing)) |
 | Mutation (`mutate: true` / `:strict`) | Hides field names from scrapers of a given render, and rejects any submitted key that isn't a valid mutation token | Working without updating `allowed_params` for any custom, non-form params your app posts |
 | Mutation (`mutate: :lenient`) | Hides field names from scrapers of a given render | Stopping a bot that already knows the real field names — plaintext names still pass through |
+| Minimum fill time (`min_fill_time`) | Rejects a submission received less than `min_fill_time` seconds after a verified render, when `nonce` or `mutate` is on | Anything on a honeypot-only form — there's no verified timestamp to check it against |
 
 ## Installation
 
@@ -40,7 +41,8 @@ gem 'spamtrap'
 
 Spamtrap installs itself into `ActionController::Base` and `ActionView::Helpers::FormBuilder`
 via `Spamtrap::Railtie`, from `on_load` hooks that fire after your app's own initializers run —
-no explicit setup needed in a Rails app.
+no explicit setup needed in a Rails app. `ActionController::API` subclasses get the `spamtrap`
+macro the same way, so a JSON-only endpoint can use it too.
 
 ### Outside Rails
 
@@ -68,10 +70,13 @@ Spamtrap.mutation_timeout = nil           # defaults to nonce_timeout
 Spamtrap.nonce_skew       = 60            # seconds a submitted timestamp may sit in the future
 Spamtrap.nonce_store      = Rails.cache   # where :single_use records seen nonce ids
 Spamtrap.nonce_bind_ip    = true          # true (full IP, default), :prefix (/24 IPv4 or /48 IPv6), or false (not bound)
+Spamtrap.min_fill_time    = 1             # seconds; false or 0 disables; needs nonce or mutate for a trustworthy timestamp
 Spamtrap.mutate           = false         # false, true/:strict (traps plaintext keys), or :lenient (remap only)
 Spamtrap.allowed_params   = []            # extra top-level param names a strict action accepts unencrypted
 Spamtrap.trap_response    = :head         # see "Trap response, Turbo and remote forms" below
 Spamtrap.on_trap          = ->(reason:, request:) { ... }  # optional trap callback
+Spamtrap.secret_key_base          = nil   # defaults to Rails.application.secret_key_base
+Spamtrap.previous_secret_key_base = nil   # set during a rotation window; see "Rotating secret_key_base" below
 ```
 
 The same options can be set per controller action:
@@ -97,7 +102,7 @@ Set a global callback in the initializer:
 # config/initializers/spamtrap.rb
 Spamtrap.on_trap = lambda do |reason:, request:, controller:, honeypot:, params:|
   # reason is one of :honeypot, :nonce_missing, :nonce_expired, :nonce_invalid,
-  # :nonce_replayed, :plaintext_field, :mutation_expired
+  # :nonce_replayed, :plaintext_field, :mutation_expired, :too_fast
   Rails.logger.warn "[Spamtrap] #{reason} trap fired from #{request.remote_ip} on #{request.path}"
   StatsD.increment('spamtrap.triggered', tags: ["reason:#{reason}"])
 end
@@ -166,6 +171,11 @@ the tab order (e.g. to also catch keyboard-driven bots):
 .reindeer_jerky { display: none; }
 ```
 
+Style the honeypot by `class`, as above, rather than an `id` selector: when mutation
+(`mutate:`) is on, the honeypot's own `name` is encrypted along with every other field's, so a
+bot can't learn to skip it by its static name — and its `id` is deliberately left opaque too
+(not subject to `Spamtrap.stable_ids`), since a stable id would give it away just as easily.
+
 If you enable mutation via the `spamtrap:` option on `form_for`/`form_with` (the recommended
 way — see [Field Name Mutation](#field-name-mutation)), field order doesn't matter. If instead
 you pass `mutate:` directly to `f.spamtrap`, call it **before** any other field helper in the
@@ -231,6 +241,8 @@ Passed to `on_trap` as `reason:`:
 - `:nonce_invalid` — bad HMAC, wrong form, wrong IP, timestamp too far in the future, or a
   malformed nonce id.
 - `:nonce_replayed` — `:single_use` only; the nonce id was already seen.
+- `:too_fast` — the nonce itself checked out, but the render timestamp is younger than
+  `Spamtrap.min_fill_time`; see [Minimum fill time](#minimum-fill-time).
 
 ### IP binding
 
@@ -248,6 +260,24 @@ Passed to `on_trap` as `reason:`:
 Sites with a significant mobile user base should prefer `:prefix` over the default `true`,
 since a full carrier IP change between page load and submission is common on mobile networks
 and would otherwise reject legitimate users.
+
+`nonce_bind_ip` can also be set per action and per render, overriding the global default —
+but the view and the controller must agree, or a legitimate submission is rejected as
+`:nonce_invalid`:
+
+```ruby
+spamtrap :field, nonce: true, nonce_bind_ip: :prefix, only: %i[create]
+```
+
+```erb
+<%= f.spamtrap :field, nonce: true, nonce_bind_ip: :prefix %>
+```
+
+or via `form_with`:
+
+```ruby
+form_with model: @comment, spamtrap: { nonce: true, nonce_bind_ip: :prefix }
+```
 
 ## Field Name Mutation
 
@@ -394,6 +424,33 @@ field names are still hidden, but a submitted plaintext field name is never trap
 spamtrap :field, mutate: :lenient, only: %i[create update]
 ```
 
+## Minimum fill time
+
+`Spamtrap.min_fill_time` (default `1`, seconds) rejects a submission whose verified render
+timestamp is less than that many seconds old, with `reason: :too_fast`. A scripted poster
+typically submits within milliseconds of fetching the page; one second is generous for a human,
+who has to notice the form, move to it, and type.
+
+It only applies when `nonce` or `mutate` is on — those are what bind `spamtrap_timestamp` into
+something a submission can't forge (the nonce HMAC, or the mutation AAD), which is what makes
+the timestamp trustworthy enough to check. Honeypot-only forms have no verified timestamp, so
+`min_fill_time` has no effect on them. The check runs after the nonce HMAC is verified, so a
+forged or stale timestamp is reported as `:nonce_invalid`/`:nonce_expired` rather than
+`:too_fast`, and before a `:single_use` nonce is recorded, so a submission trapped as too fast
+can be sent again from the same page once enough time has passed.
+
+Set `false` or `0` to disable it globally:
+
+```ruby
+Spamtrap.min_fill_time = false
+```
+
+Or override it per action, like any other option:
+
+```ruby
+spamtrap :field, nonce: true, min_fill_time: 3, only: %i[create]
+```
+
 ## Trap response, Turbo and remote forms
 
 By default, a trapped submission gets `Spamtrap.trap_response = :head` — an empty `200 OK`,
@@ -452,10 +509,73 @@ Spamtrap.trap_response = {
 
 `layout: !controller.request.xhr?` skips the layout for the `remote: true`/Turbo Stream
 request (which only needs the form partial back) while still rendering it for a normal
-full-page submission. The reasons a human can plausibly hit in 0.4.0 — the ones worth a
-`default` branch like this rather than a silent `:head` — are `:nonce_expired`,
-`:mutation_expired`, `:nonce_invalid` (most often an IP change between page load and submit),
-and `:nonce_replayed` (a double submit under `nonce: :single_use`).
+full-page submission. The reasons a human can plausibly hit — the ones worth a `default`
+branch like this rather than a silent `:head` — are `:too_fast` (a very quick submission,
+such as a browser autofill-and-send), `:nonce_expired`, `:mutation_expired`, `:nonce_invalid`
+(most often an IP change between page load and submit), and `:nonce_replayed` (a double
+submit under `nonce: :single_use`).
+
+## Instrumentation and rate limiting
+
+Every trap publishes an `ActiveSupport::Notifications` event, `trap.spamtrap`, before `on_trap`
+is called — use it for metrics or logging without touching `on_trap` at all:
+
+```ruby
+ActiveSupport::Notifications.subscribe('trap.spamtrap') do |event|
+  # event.payload: reason, honeypot, controller, action, ip, request
+  StatsD.increment('spamtrap.triggered', tags: ["reason:#{event.payload[:reason]}"])
+end
+```
+
+`Spamtrap.throttle_key(request)` returns `"spamtrap:<ip>"`, with the IP normalised the same way
+the nonce binds it (`Spamtrap.normalize_ip`, honouring `Spamtrap.nonce_bind_ip`) — use it to key
+a rate limit to one client without reimplementing that normalisation yourself.
+
+### Rack::Attack
+
+Count trips in a `trap.spamtrap` subscriber, then block once a client trips it too often:
+
+```ruby
+ActiveSupport::Notifications.subscribe('trap.spamtrap') do |event|
+  key = "#{Spamtrap.throttle_key(event.payload[:request])}:trips"
+  Rails.cache.increment(key, 1, expires_in: 1.hour)
+end
+
+Rack::Attack.blocklist('spamtrap repeat offenders') do |request|
+  Rails.cache.read("#{Spamtrap.throttle_key(request)}:trips").to_i >= 5
+end
+```
+
+This needs a real, shared cache store — as with `nonce: :single_use` (see
+[Single-use nonces](#single-use-nonces)), `ActiveSupport::Cache::NullStore` (Rails'
+test-environment default) never actually records a trip.
+
+### Rails' built-in `rate_limit`
+
+Rails 8's `rate_limit` is a blunter alternative: no subscriber needed, but it throttles *every*
+submission from a client prefix, not just trapped ones:
+
+```ruby
+class CommentsController < ApplicationController
+  rate_limit to: 10, within: 1.hour, by: -> { Spamtrap.throttle_key(request) }, only: :create
+end
+```
+
+## Rotating secret_key_base
+
+`Spamtrap.secret_key_base` (defaults to `Rails.application.secret_key_base`) is the secret new
+tokens and nonces are minted and verified against; `Spamtrap.previous_secret_key_base` (default
+`nil`) is tried second on a mismatch. Set it for one timeout window after rotating
+`secret_key_base`, and forms that were already rendered under the old secret keep verifying
+until they'd have expired on their own anyway:
+
+```ruby
+# config/initializers/spamtrap.rb
+Spamtrap.secret_key_base          = ENV['SPAMTRAP_SECRET']
+Spamtrap.previous_secret_key_base = ENV['SPAMTRAP_PREVIOUS_SECRET'] # remove once nonce_timeout/mutation_timeout has passed
+```
+
+Keys are derived from each secret once per process (HKDF), not on every request.
 
 ## Caching
 
@@ -488,7 +608,7 @@ end
 
 It provides:
 
-- `spamtrap_params(honeypot:, ip: '0.0.0.0', nonce: false, mutate: false, at: Time.now.to_i, fields: nil)` —
+- `spamtrap_params(honeypot:, ip: '0.0.0.0', nonce: false, mutate: false, at: Time.now.to_i - 5, bind_ip: Spamtrap.nonce_bind_ip, fields: nil)` —
   the params hash a protected action needs: the empty honeypot field, plus whatever
   `spamtrap_timestamp`/nonce fields the declared options require. `fields:` is merged in —
   through `spamtrap_mutate` first when `mutate:` is truthy, unchanged otherwise — so one call
@@ -503,13 +623,18 @@ It provides:
   Hash, or an Array of Hashes) are left plaintext and recursed into; every other key — including
   one whose value is an array of scalars — is encrypted, with a trailing multi-parameter suffix
   like `published_on(1i)` preserved after the token.
-- `spamtrap_nonce_params(honeypot:, ip:, at: Time.now.to_i, nonce_id: SecureRandom.hex(16))` —
+- `spamtrap_nonce_params(honeypot:, ip:, at: Time.now.to_i - 5, nonce_id: SecureRandom.hex(16), bind_ip: Spamtrap.nonce_bind_ip)` —
   just the nonce fields, if you need them without the honeypot key.
+
+`at:` defaults to five seconds in the past on both, so a token built this way already clears
+`Spamtrap.min_fill_time`'s default 1-second floor (see [Minimum fill time](#minimum-fill-time))
+without you having to think about it. `bind_ip:` lets you build params for an action declared
+with a non-default `nonce_bind_ip:` (see [IP binding](#ip-binding)).
 
 ```ruby
 class CommentsControllerTest < ActionController::TestCase
   def test_create_with_mutation_and_nonce
-    ts = Time.now.to_i
+    ts = Time.now.to_i - 5
     params = spamtrap_params(honeypot: 'field', ip: '127.0.0.1', nonce: true, mutate: true, at: ts)
              .merge(comment: { spamtrap_token('body', ts) => 'hi' })
 
@@ -534,6 +659,12 @@ end
 The nonce is bound to the client IP (see [IP binding](#ip-binding)), so the `ip:` you pass to
 `spamtrap_params`/`spamtrap_nonce_params` must match the test request's `remote_addr` —
 `ActionController::TestCase` defaults `remote_addr` to `'0.0.0.0'`.
+
+If your own test helpers mint a `spamtrap_timestamp` directly instead of going through
+`spamtrap_params`/`spamtrap_nonce_params` — e.g. stamping `Time.now.to_i` straight into a
+fixture — either backdate it by a few seconds the same way, or set
+`Spamtrap.min_fill_time = false` in your test environment; otherwise a request built and posted
+within the same second as `Time.now` trips `:too_fast`.
 
 `Rails.cache` is usually `ActiveSupport::Cache::NullStore` in the test environment, which
 means `nonce: :single_use` cannot detect replays there (see [Single-use nonces](#single-use-nonces))

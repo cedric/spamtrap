@@ -24,17 +24,21 @@ module Spamtrap::Controller
       mutate_opt        = options.key?(:mutate)        ? options.delete(:mutate)        : :global
       on_trap_opt       = options.key?(:on_trap)       ? options.delete(:on_trap)       : :global
       trap_response_opt = options.key?(:trap_response) ? options.delete(:trap_response) : :global
+      nonce_bind_ip_opt = options.key?(:nonce_bind_ip) ? options.delete(:nonce_bind_ip) : :global
+      min_fill_time_opt = options.key?(:min_fill_time) ? options.delete(:min_fill_time) : :global
 
       before_action(options) do |controller|
         next unless Spamtrap.enabled
 
         controller.instance_eval(&block) if block_given?
         controller.instance_eval do
-          nonce_enabled  = nonce_opt   == :global ? Spamtrap.nonce         : nonce_opt
-          nonce_timeout  = timeout_opt == :global ? Spamtrap.nonce_timeout : timeout_opt
-          mutate_enabled = mutate_opt  == :global ? Spamtrap.mutate        : mutate_opt
+          nonce_enabled    = nonce_opt         == :global ? Spamtrap.nonce         : nonce_opt
+          nonce_timeout    = timeout_opt       == :global ? Spamtrap.nonce_timeout : timeout_opt
+          mutate_enabled   = mutate_opt        == :global ? Spamtrap.mutate        : mutate_opt
+          bind_ip          = nonce_bind_ip_opt == :global ? Spamtrap.nonce_bind_ip : nonce_bind_ip_opt
+          min_fill_time    = min_fill_time_opt == :global ? Spamtrap.min_fill_time : min_fill_time_opt
           # true and :strict both trap plaintext keys; :lenient only remaps.
-          strict         = mutate_enabled && mutate_enabled != :lenient
+          strict           = mutate_enabled && mutate_enabled != :lenient
 
           remap = spamtrap_remap_params(Spamtrap.mutation_timeout) if mutate_enabled
 
@@ -45,15 +49,18 @@ module Spamtrap::Controller
             spamtrap_trap(:mutation_expired, honeypot, on_trap_opt, trap_response_opt)
           elsif strict && (reason = spamtrap_strict_violation(remap, honeypot))
             spamtrap_trap(reason, honeypot, on_trap_opt, trap_response_opt)
-          elsif nonce_enabled && (reason = spamtrap_nonce_failure(nonce_timeout, honeypot, nonce_enabled))
+          elsif nonce_enabled && (reason = spamtrap_nonce_failure(nonce_timeout, honeypot, nonce_enabled, bind_ip: bind_ip, min_fill_time: min_fill_time))
             spamtrap_trap(reason, honeypot, on_trap_opt, trap_response_opt)
+          # Mutation-only forms: the nonce path above already applied the fill time.
+          elsif !nonce_enabled && mutate_enabled && spamtrap_too_fast?(min_fill_time)
+            spamtrap_trap(:too_fast, honeypot, on_trap_opt, trap_response_opt)
           end
         end
       end
     end
   end
 
-  def spamtrap_nonce_failure(timeout, honeypot, mode)
+  def spamtrap_nonce_failure(timeout, honeypot, mode, bind_ip: Spamtrap.nonce_bind_ip, min_fill_time: Spamtrap.min_fill_time)
     timestamp = params[:spamtrap_timestamp].to_i
     nonce     = params[:spamtrap_nonce].to_s
     nonce_id  = params[:spamtrap_nonce_id].to_s
@@ -65,8 +72,17 @@ module Spamtrap::Controller
     return :nonce_invalid if timestamp - now > Spamtrap.nonce_skew
     return :nonce_expired if now - timestamp > timeout.to_i # checked before the HMAC so a genuine expired token reports as expired
 
-    expected = spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id)
-    return :nonce_invalid unless ActiveSupport::SecurityUtils.secure_compare(nonce, expected)
+    expected = spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id, bind_ip: bind_ip)
+    unless ActiveSupport::SecurityUtils.secure_compare(nonce, expected)
+      # Retry with the previous secret during a rotation window before giving up.
+      previous_secret = Spamtrap.previous_secret_key_base
+      previous = previous_secret && spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id, bind_ip: bind_ip, secret: previous_secret)
+      return :nonce_invalid unless previous && ActiveSupport::SecurityUtils.secure_compare(nonce, previous)
+    end
+
+    # After the HMAC (so a forged timestamp is :nonce_invalid) but before single-use records
+    # the id, or a human trapped as too fast could never resubmit the same page.
+    return :too_fast if spamtrap_too_fast?(min_fill_time)
 
     if mode == :single_use
       key    = "spamtrap:nonce:#{nonce_id}"
@@ -86,6 +102,13 @@ module Spamtrap::Controller
     return if @null_store_warned
     @null_store_warned = true
     Rails.logger.warn 'Spamtrap: nonce: :single_use needs a real Spamtrap.nonce_store; NullStore cannot detect replays.'
+  end
+
+  def spamtrap_too_fast?(min_fill_time)
+    return false unless min_fill_time && min_fill_time.to_i.positive?
+
+    ts = params[:spamtrap_timestamp].to_i
+    ts.positive? && Time.now.to_i - ts < min_fill_time.to_i
   end
 
   # Returns [:missing, []], [:expired, leftovers], or [:ok, leftovers], where leftovers is
@@ -151,6 +174,8 @@ module Spamtrap::Controller
   # rendered/redirected (performed? short-circuits so a custom on_trap response wins).
   def spamtrap_trap(reason, honeypot, on_trap_opt, trap_response_opt)
     Rails.logger.warn "Spamtrap #{reason} from #{request.remote_ip}."
+    payload = { reason: reason, honeypot: honeypot.to_s, controller: controller_path, action: action_name, ip: request.remote_ip, request: request }
+    ActiveSupport::Notifications.instrument('trap.spamtrap', payload) { }
     spamtrap_invoke_on_trap(reason, on_trap_opt, honeypot)
     return if performed?
 
@@ -201,7 +226,7 @@ module Spamtrap::Controller
     Rails.logger.error "Spamtrap on_trap callback raised: #{e.class}: #{e.message}"
   end
 
-  private :spamtrap_nonce_failure, :spamtrap_remap_params, :spamtrap_remap_hash,
+  private :spamtrap_nonce_failure, :spamtrap_too_fast?, :spamtrap_remap_params, :spamtrap_remap_hash,
           :spamtrap_strict_violation, :spamtrap_trap, :spamtrap_render_trap, :spamtrap_invoke_on_trap
 
 end

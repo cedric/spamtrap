@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-09-27
+
+### Added
+- `Spamtrap.min_fill_time` (default `1` second) — rejects a submission whose verified render
+  timestamp is younger than this, with `reason: :too_fast`. Applies only when `nonce` or
+  `mutate` is on (those are what make the timestamp trustworthy) and checks after the nonce, so
+  a forged timestamp still reports as `:nonce_invalid`. Also settable per action via
+  `min_fill_time:`.
+- Every trap now publishes an `ActiveSupport::Notifications` event, `trap.spamtrap`, with
+  payload keys `reason`, `honeypot`, `controller`, `action`, `ip`, and `request`, before
+  `on_trap` runs.
+- `Spamtrap.throttle_key(request)` — `"spamtrap:<ip>"`, IP-normalised the same way the nonce
+  binds it (honouring `nonce_bind_ip`), for keying `Rack::Attack` or Rails' `rate_limit` off
+  `trap.spamtrap` events.
+- `Spamtrap.secret_key_base` (defaults to the app's own) and
+  `Spamtrap.previous_secret_key_base` (default `nil`) — tokens and nonces are minted with the
+  current secret; verification tries the current secret, then the previous one, so setting
+  `previous_secret_key_base` for one timeout window after rotating `secret_key_base` keeps
+  in-flight forms valid.
+- `ActionController::API` subclasses can now use the `spamtrap` macro, installed via the same
+  Railtie as `ActionController::Base`.
+- `nonce_bind_ip:` is now accepted per declaration — by the `spamtrap` macro, by `f.spamtrap`,
+  and via `form_with ... spamtrap: { nonce_bind_ip: :prefix }` — not just as a global default.
+- The honeypot field's own `name` is now encrypted along with every other field when mutation
+  is on, so a bot can't learn to skip it by its static name. Its `id` is deliberately left
+  opaque (not subject to `Spamtrap.stable_ids`), since a stable id would give it away just as
+  easily.
+- `Spamtrap::TestHelper#spamtrap_params` and `#spamtrap_nonce_params` accept `bind_ip:`.
+
+### Changed
+- `Spamtrap.min_fill_time` defaults to `1` second, so a submission received less than a second
+  after its verified render is now trapped with `reason: :too_fast`. This only affects forms
+  using `nonce` or `mutate` — honeypot-only forms are unaffected — and can be disabled globally
+  with `Spamtrap.min_fill_time = false` or per action with `min_fill_time: false`.
+  `Spamtrap::TestHelper#spamtrap_params`/`#spamtrap_nonce_params` now default `at:` to five
+  seconds in the past so existing tests using them keep passing unmodified; a test suite that
+  mints its own timestamps as `Time.now` should backdate them or set
+  `Spamtrap.min_fill_time = false` in its test environment.
+
 ## [0.4.0] - 2026-09-27
 
 ### Breaking
