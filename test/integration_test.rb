@@ -110,3 +110,133 @@ class IntegrationTest < ActionDispatch::IntegrationTest
     assert_equal 'trap_field', events.first[:honeypot]
   end
 end
+
+# Spamtrap.token_context bound to the request host: rendering and posting on the same
+# hostname works as before; posting the rendered form after the host changes is rejected.
+class TokenContextIntegrationTest < ActionDispatch::IntegrationTest
+  setup do
+    Rails.cache.clear
+    Spamtrap.token_context = ->(request) { request.host }
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+    Spamtrap.token_context = nil
+    Spamtrap.min_fill_time = false # the suite-wide baseline set in test_helper
+  end
+
+  def rendered_form
+    get '/integration/new'
+    assert_response :ok
+    fields = response.body.scan(/<input[^>]*>/).to_h { |t| [t[/name="([^"]*)"/, 1], t[/value="([^"]*)"/, 1] || 'x'] }
+    honeypot_name = response.body[/<textarea[^>]*name="([^"]*)"/, 1]
+    fields.compact.merge(honeypot_name => '')
+  end
+
+  def test_same_host_render_and_submit_passes
+    host! 'a.example'
+    form = rendered_form
+
+    post '/integration/create', params: form
+    assert_response :ok
+    assert_equal %w[body email], JSON.parse(response.body).keys.sort
+    assert_empty @reasons
+  end
+
+  def test_posting_the_rendered_form_after_the_host_changes_is_rejected
+    host! 'a.example'
+    form = rendered_form
+
+    host! 'b.example'
+    post '/integration/create', params: form
+    assert_response :unprocessable_entity
+    # IntegrationController mutates strictly, so a field that no longer decrypts is caught
+    # by the mutation check before the (also-failing) nonce check ever runs.
+    assert_equal [:plaintext_field], @reasons
+  end
+end
+
+class IntegrationJsController < ActionController::Base
+  spamtrap :trap_field, mutate: true, nonce: true, js_proof: true, only: :create,
+           trap_response: :unprocessable,
+           suspicious_if: ->(params) { params[:comment][:body].to_s.include?('http') }
+
+  def new
+    render inline: <<~ERB
+      <%= form_with scope: :comment, url: '/integration_js/create', spamtrap: { mutate: true, nonce: true, js_proof: true } do |f| %>
+        <%= f.text_field :body %>
+        <%= f.spamtrap :trap_field, styles: %i[textarea text checkbox] %>
+      <% end %>
+    ERB
+  end
+
+  def create
+    render plain: params[:comment].to_unsafe_h.to_json
+  end
+end
+
+class IntegrationJsTest < ActionDispatch::IntegrationTest
+  setup do
+    Rails.cache.clear
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+  end
+
+  teardown { Spamtrap.on_trap = nil }
+
+  # What a browser would submit: every field, with the JS token filled in the way the
+  # inline script does (reverse the embedded literal), keyed by rendered name.
+  def rendered_form
+    get '/integration_js/new'
+    assert_response :ok
+    html = response.body
+    fields = html.scan(/<input[^>]*>/).to_h { |t| [t[/name="([^"]*)"/, 1], t[/value="([^"]*)"/, 1] || ''] }.compact
+    @decoys = { textarea: html[/<textarea[^>]*name="([^"]*)"/, 1] }
+    decoy_inputs = fields.keys.reject { |k| k.start_with?('comment[', 'spamtrap_', 'authenticity') }
+    @decoys[:text] = decoy_inputs.find { |k| html.include?(%(type="text" name="#{k}")) }
+    @decoys[:checkbox] = decoy_inputs.find { |k| html.include?(%(type="checkbox" name="#{k}")) }
+    reversed = html[/value="([^"]+)"\.split\(""\)\.reverse\(\)\.join\(""\)/, 1]
+    fields['spamtrap_js'] = reversed.reverse
+    fields.delete(@decoys[:checkbox]) # unchecked boxes are not submitted
+    fields.merge(@decoys[:textarea] => '')
+  end
+
+  def test_browser_like_submission_passes_and_script_carries_no_plain_digest
+    form = rendered_form
+    assert_includes response.body, '<script'
+    refute_includes response.body, form['spamtrap_js'] # only the reversed literal is in the page
+    post '/integration_js/create', params: form.merge('comment' => { form.keys.grep(/comment/).first[/\[(.+)\]/, 1] => 'hello' })
+    assert_response :ok
+    assert_equal({ 'body' => 'hello' }, JSON.parse(response.body))
+    assert_empty @reasons
+  end
+
+  def test_submission_without_running_the_script_is_rejected
+    form = rendered_form
+    form['spamtrap_js'] = ''
+    post '/integration_js/create', params: form
+    assert_response :unprocessable_entity
+    assert_equal [:no_js], @reasons
+  end
+
+  def test_each_decoy_style_traps_when_filled
+    form = rendered_form
+    refute_nil @decoys[:text]
+    refute_nil @decoys[:checkbox]
+    post '/integration_js/create', params: form.merge(@decoys[:text] => 'bot')
+    assert_response :unprocessable_entity
+    post '/integration_js/create', params: rendered_form.merge(@decoys[:checkbox] => '1')
+    assert_response :unprocessable_entity
+    assert_equal [:honeypot, :honeypot], @reasons
+  end
+
+  def test_content_hook_traps_a_link_after_every_other_check_passes
+    form = rendered_form
+    token = form.keys.grep(/comment/).first[/\[(.+)\]/, 1]
+    post '/integration_js/create', params: form.merge('comment' => { token => 'visit http://spam.example' })
+    assert_response :unprocessable_entity
+    assert_equal [:content], @reasons
+  end
+end

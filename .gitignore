@@ -4,3 +4,4 @@
 .bundle/config
 Gemfile.lock
 gemfiles/*.lock
+test/tmp/

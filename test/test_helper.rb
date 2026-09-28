@@ -23,6 +23,10 @@ Spamtrap.min_fill_time = false
 
 Rails.application.routes.draw do
   get  'integration/new',    to: 'integration#new'
+  get  'integration_js/new',    to: 'integration_js#new'
+  post 'integration_js/create', to: 'integration_js#create'
+  post 'js_proof_only/create',  to: 'js_proof_only#create'
+  post 'strict_js_proof/create', to: 'strict_js_proof#create'
   post 'integration/create', to: 'integration#create'
   post 'honeypot/create',      to: 'honeypot#create'
   post 'nonce/create',         to: 'nonce#create'
@@ -56,6 +60,11 @@ Rails.application.routes.draw do
   post 'fill_time_global/create',              to: 'fill_time_global#create'
   post 'nonce_bind_ip_action/create',          to: 'nonce_bind_ip_action#create'
   post 'api_honeypot/create',                  to: 'api_honeypot#create'
+  post 'js_proof/create',                      to: 'js_proof#create'
+  post 'content_hook/create',                  to: 'content_hook#create'
+  post 'content_hook_keyword/create',          to: 'content_hook_keyword#create'
+  post 'content_hook_raising/create',          to: 'content_hook_raising#create'
+  post 'content_hook_not_called/create',       to: 'content_hook_not_called#create'
 end
 
 class ActionController::TestCase

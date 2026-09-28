@@ -2,8 +2,8 @@
 
 [![Test](https://github.com/cedric/spamtrap/actions/workflows/test.yml/badge.svg)](https://github.com/cedric/spamtrap/actions/workflows/test.yml)
 
-Spamtrap is a Rails gem that protects forms from spambots through three complementary
-mechanisms:
+Spamtrap is a Rails gem that protects forms from spambots through a set of complementary,
+individually opt-in mechanisms:
 
 - **Honeypot fields** — hidden textarea fields that real users never touch. Bots that fill
   them in are silently discarded with a `200 OK` response.
@@ -15,6 +15,12 @@ mechanisms:
   them back transparently. `mutate: true` (and `:strict`) additionally rejects any submission
   containing a plaintext field name; use `mutate: :lenient` for remap-only.
 
+- **Minimum fill time** — submissions arriving less than a second after the form was rendered
+  are rejected; scripted posters usually submit within milliseconds.
+- **JavaScript proof of presence** — an optional hidden field only an executing script fills
+  in, for forms where excluding no-JS users is acceptable.
+- **Content hook** — an app-supplied check on the submitted params, given the same trap
+  response, callback and instrumentation as the built-in checks.
 Each feature is opt-in and can be used independently or combined. None of them is a complete
 defense on its own — read the guarantees below before relying on one.
 
@@ -28,6 +34,8 @@ defense on its own — read the guarantees below before relying on one.
 | Mutation (`mutate: true` / `:strict`) | Hides field names from scrapers of a given render, and rejects any submitted key that isn't a valid mutation token | Working without updating `allowed_params` for any custom, non-form params your app posts |
 | Mutation (`mutate: :lenient`) | Hides field names from scrapers of a given render | Stopping a bot that already knows the real field names — plaintext names still pass through |
 | Minimum fill time (`min_fill_time`) | Rejects a submission received less than `min_fill_time` seconds after a verified render, when `nonce` or `mutate` is on | Anything on a honeypot-only form — there's no verified timestamp to check it against |
+| JS proof (`js_proof: true`) | Traps a client that never executes JavaScript | Traps a headless browser, or a bot that parses the page's script and computes the value itself |
+| Content hook (`suspicious_if:`) | Runs your own heuristic with the same trap response, callback, and instrumentation as the built-in checks | Any spam detection itself — that logic is entirely yours |
 
 ## Installation
 
@@ -43,6 +51,18 @@ Spamtrap installs itself into `ActionController::Base` and `ActionView::Helpers:
 via `Spamtrap::Railtie`, from `on_load` hooks that fire after your app's own initializers run —
 no explicit setup needed in a Rails app. `ActionController::API` subclasses get the `spamtrap`
 macro the same way, so a JSON-only endpoint can use it too.
+
+Then run the install generator to write an initializer documenting every configuration option
+at its default, commented out:
+
+```
+rails g spamtrap:install
+```
+
+This creates `config/initializers/spamtrap.rb`. Uncomment and change only the options you want
+to override — see [Configuration](#configuration) below for what each one does. Writing the
+file yourself instead of running the generator works just as well; the generator just saves you
+copying the option list out of this README.
 
 ### Outside Rails
 
@@ -64,6 +84,8 @@ are read at request time, so changes take effect immediately without restarting 
 ```ruby
 # config/initializers/spamtrap.rb
 Spamtrap.enabled          = true          # false skips every check (honeypot, nonce, mutation); for test environments
+Spamtrap.honeypot_styles  = [:textarea]   # decoys f.spamtrap renders: any of :textarea, :text, :checkbox
+Spamtrap.js_proof         = false         # require a hidden field only an executing script fills in
 Spamtrap.nonce            = false        # false, true, or :single_use
 Spamtrap.nonce_timeout    = 1800          # seconds; also caps mutation token age unless mutation_timeout is set
 Spamtrap.mutation_timeout = nil           # defaults to nonce_timeout
@@ -75,8 +97,10 @@ Spamtrap.mutate           = false         # false, true/:strict (traps plaintext
 Spamtrap.allowed_params   = []            # extra top-level param names a strict action accepts unencrypted
 Spamtrap.trap_response    = :head         # see "Trap response, Turbo and remote forms" below
 Spamtrap.on_trap          = ->(reason:, request:) { ... }  # optional trap callback
+Spamtrap.suspicious_if    = nil           # optional content hook; see "Content hook" below
 Spamtrap.secret_key_base          = nil   # defaults to Rails.application.secret_key_base
 Spamtrap.previous_secret_key_base = nil   # set during a rotation window; see "Rotating secret_key_base" below
+Spamtrap.token_context            = nil   # binds tokens to a per-request value (e.g. host); see "Binding tokens to the host" below
 ```
 
 The same options can be set per controller action:
@@ -102,7 +126,7 @@ Set a global callback in the initializer:
 # config/initializers/spamtrap.rb
 Spamtrap.on_trap = lambda do |reason:, request:, controller:, honeypot:, params:|
   # reason is one of :honeypot, :nonce_missing, :nonce_expired, :nonce_invalid,
-  # :nonce_replayed, :plaintext_field, :mutation_expired, :too_fast
+  # :nonce_replayed, :plaintext_field, :mutation_expired, :too_fast, :no_js, :content
   Rails.logger.warn "[Spamtrap] #{reason} trap fired from #{request.remote_ip} on #{request.path}"
   StatsD.increment('spamtrap.triggered', tags: ["reason:#{reason}"])
 end
@@ -180,6 +204,29 @@ If you enable mutation via the `spamtrap:` option on `form_for`/`form_with` (the
 way — see [Field Name Mutation](#field-name-mutation)), field order doesn't matter. If instead
 you pass `mutate:` directly to `f.spamtrap`, call it **before** any other field helper in the
 form; fields rendered before it are not mutated.
+
+### Honeypot styles
+
+By default `f.spamtrap` renders a single hidden textarea. Some bots skip textareas, or skip
+anything hidden with `display:none`, but still auto-fill visible-looking inputs and tick
+checkboxes — `styles:` adds more decoy shapes to catch those:
+
+```erb
+<%= f.spamtrap :sarah_palin_walks_with_dinosaurs, styles: %i[textarea text checkbox] %>
+```
+
+`:textarea` renders the classic hidden `<textarea>`, named after the declared honeypot.
+`:text` renders a hidden text `<input>` named `<honeypot>_input`; `:checkbox` renders a hidden,
+unchecked checkbox named `<honeypot>_check`. All requested styles share the same hiding
+attributes (`tabindex="-1"`, `autocomplete="off"`, `aria-hidden="true"`, `style="display:none"`),
+and all are encrypted along with every other field when mutation is on. The controller checks
+all three derived names regardless of which styles were actually rendered, so changing `styles:`
+later never leaves an old decoy unchecked. The derived names are on the strict-mutation
+allowlist automatically — you never need to add them to `Spamtrap.allowed_params`.
+
+Set a default for every form with `Spamtrap.honeypot_styles = %i[textarea text checkbox]` in
+the initializer, override per render with `styles:` on `f.spamtrap`, or via
+`form_with model: @comment, spamtrap: { styles: %i[textarea text checkbox] }`.
 
 ## Nonce
 
@@ -451,6 +498,70 @@ Or override it per action, like any other option:
 spamtrap :field, nonce: true, min_fill_time: 3, only: %i[create]
 ```
 
+## JavaScript proof of presence
+
+`js_proof: true` adds a hidden `spamtrap_js` field, plus an inline script that fills it in as
+the page is parsed. A submission missing the field, or with the wrong value, is trapped with
+`reason: :no_js`.
+
+```ruby
+spamtrap :sarah_palin_walks_with_dinosaurs, js_proof: true, only: %i[create update]
+```
+
+```erb
+<%= f.spamtrap :sarah_palin_walks_with_dinosaurs, js_proof: true %>
+```
+
+Enable it globally with `Spamtrap.js_proof = true`, or via `form_with ... spamtrap: {
+js_proof: true }`, the same as any other option.
+
+**What this stops, and what it doesn't.** It stops a client that never executes JavaScript at
+all — most scripted form posters. It does **not** stop a headless browser, which executes the
+page's script like any real one. The value is present in the page source (reversed, as
+obfuscation only, not encryption), so a bot that bothers to parse the inline script can compute
+it itself. It's off by default because it's the one check here that excludes real users —
+anyone with JavaScript disabled or blocked is rejected along with the bots.
+
+The token is bound to the render timestamp and expires after `nonce_timeout`. With `nonce` or
+`mutate` also on, that timestamp is itself verified (HMAC or mutation AAD); without either, it's
+merely bounded by age, since nothing stops a submission from claiming an arbitrary timestamp.
+
+**Content Security Policy.** The inline script is emitted via `javascript_tag(nonce: true)`, so
+an app with a CSP nonce generator configured (`config.content_security_policy_nonce_generator`)
+gets the nonce attribute automatically and needs no further change. An app with a strict CSP
+and no nonce generator configured must add one, or the inline script will be blocked and
+`js_proof` will trap every submission.
+
+**Turbo.** The script runs as the page is parsed, so it works on a full page load and on a
+Turbo Drive visit. A form rendered inside a Turbo Frame response will **not** run it, unless
+your app re-executes scripts delivered inside frames — don't enable `js_proof` for a
+frame-rendered form unless you've verified your app does that.
+
+## Content hook
+
+`Spamtrap.suspicious_if` (or per-action `suspicious_if:`) plugs your own spam-filtering logic
+into the same trap machinery as the built-in checks — the same trap response, `on_trap`
+callback, and `trap.spamtrap` instrumentation — without spamtrap trying to guess what "spammy"
+means for your form. It runs last, after every other check has passed, and a truthy return
+traps the submission with `reason: :content`.
+
+```ruby
+spamtrap :comment, only: :create,
+         suspicious_if: ->(params) { params[:comment][:body].to_s.scan('http').size > 2 }
+```
+
+The callable is dispatched the same way as `on_trap` (see [Trap callback](#trap-callback-on_trap)):
+a bare positional argument receives just `params`, or declare `params:`, `request:`, and/or
+`controller:` as keywords to receive only what you ask for. An exception raised inside it is
+logged and treated as *not* suspicious — a bug in your own heuristic must not end up trapping
+every legitimate visitor.
+
+Set it globally in the initializer, or override per action:
+
+```ruby
+Spamtrap.suspicious_if = ->(params) { params[:comment][:body].to_s.scan('http').size > 2 }
+```
+
 ## Trap response, Turbo and remote forms
 
 By default, a trapped submission gets `Spamtrap.trap_response = :head` — an empty `200 OK`,
@@ -512,8 +623,9 @@ request (which only needs the form partial back) while still rendering it for a 
 full-page submission. The reasons a human can plausibly hit — the ones worth a `default`
 branch like this rather than a silent `:head` — are `:too_fast` (a very quick submission,
 such as a browser autofill-and-send), `:nonce_expired`, `:mutation_expired`, `:nonce_invalid`
-(most often an IP change between page load and submit), and `:nonce_replayed` (a double
-submit under `nonce: :single_use`).
+(most often an IP change between page load and submit), `:nonce_replayed` (a double
+submit under `nonce: :single_use`), and `:no_js` (JavaScript disabled or blocked, under
+`js_proof`).
 
 ## Instrumentation and rate limiting
 
@@ -577,6 +689,35 @@ Spamtrap.previous_secret_key_base = ENV['SPAMTRAP_PREVIOUS_SECRET'] # remove onc
 
 Keys are derived from each secret once per process (HKDF), not on every request.
 
+## Binding tokens to the host (multi-tenant apps)
+
+An app serving many hostnames from one `secret_key_base` shares its keys across all of them —
+a nonce, mutation token, or `js_proof` value minted while rendering a form on `a.example` also
+verifies on `b.example`. `Spamtrap.token_context` closes that gap by mixing a value you derive
+from the request into every token:
+
+```ruby
+# config/initializers/spamtrap.rb
+Spamtrap.token_context = ->(request) { request.host }
+```
+
+It's off (`nil`) by default, so the token format is unchanged for apps that don't set it — every
+existing token keeps verifying exactly as before. Once set, a token minted on one host and
+submitted from another fails the same check it always would have, with no new trap reason:
+`nonce_invalid` for the nonce, `plaintext_field` (strict) or an unmapped field (`:lenient`) for
+mutation, and `no_js` for `js_proof`.
+
+**Caution:** don't enable this if a form can legitimately be rendered on one hostname and posted
+to another — e.g. `www.example.com` serving the form for `app.example.com` to submit to, or an
+app sitting behind a proxy that rewrites the `Host` header before it reaches Rails. In either
+case `request.host` differs between render and submission for entirely legitimate traffic, and
+every one of those submissions would be rejected. Use a context both sides agree on instead, such
+as the tenant id:
+
+```ruby
+Spamtrap.token_context = ->(request) { Current.tenant_id }
+```
+
 ## Caching
 
 Fragment, page, or CDN caching of a rendered form freezes the render timestamp, client IP,
@@ -608,28 +749,34 @@ end
 
 It provides:
 
-- `spamtrap_params(honeypot:, ip: '0.0.0.0', nonce: false, mutate: false, at: Time.now.to_i - 5, bind_ip: Spamtrap.nonce_bind_ip, fields: nil)` —
+- `spamtrap_params(honeypot:, ip: '0.0.0.0', nonce: false, mutate: false, js_proof: false, at: Time.now.to_i - 5, bind_ip: Spamtrap.nonce_bind_ip, fields: nil, context: nil)` —
   the params hash a protected action needs: the empty honeypot field, plus whatever
-  `spamtrap_timestamp`/nonce fields the declared options require. `fields:` is merged in —
-  through `spamtrap_mutate` first when `mutate:` is truthy, unchanged otherwise — so one call
-  builds the whole POST.
-- `spamtrap_token(name, timestamp)` — encrypts a real field name into the same kind of
-  mutation token the view helper renders, for posting to a `mutate:`-protected action.
-- `spamtrap_decrypt(token, timestamp)` — the reverse, for asserting on a token your app
-  captured.
-- `spamtrap_mutate(hash, at:)` — encrypts every field name in a whole params hash the way the
-  form builder renders them, so it round-trips through a `mutate:`-protected action without
-  hand-building a token per field. Object/`fields_for` container names (a key whose value is a
-  Hash, or an Array of Hashes) are left plaintext and recursed into; every other key — including
-  one whose value is an array of scalars — is encrypted, with a trailing multi-parameter suffix
-  like `published_on(1i)` preserved after the token.
-- `spamtrap_nonce_params(honeypot:, ip:, at: Time.now.to_i - 5, nonce_id: SecureRandom.hex(16), bind_ip: Spamtrap.nonce_bind_ip)` —
+  `spamtrap_timestamp`/nonce/`js_proof` fields the declared options require. `fields:` is
+  merged in — through `spamtrap_mutate` first when `mutate:` is truthy, unchanged otherwise —
+  so one call builds the whole POST.
+- `spamtrap_token(name, timestamp, context: nil)` — encrypts a real field name into the same kind
+  of mutation token the view helper renders, for posting to a `mutate:`-protected action.
+- `spamtrap_decrypt(token, timestamp, context: nil)` — the reverse, for asserting on a token your
+  app captured.
+- `spamtrap_mutate(hash, at:, context: nil)` — encrypts every field name in a whole params hash
+  the way the form builder renders them, so it round-trips through a `mutate:`-protected action
+  without hand-building a token per field. Object/`fields_for` container names (a key whose value
+  is a Hash, or an Array of Hashes) are left plaintext and recursed into; every other key —
+  including one whose value is an array of scalars — is encrypted, with a trailing
+  multi-parameter suffix like `published_on(1i)` preserved after the token.
+- `spamtrap_nonce_params(honeypot:, ip:, at: Time.now.to_i - 5, nonce_id: SecureRandom.hex(16), bind_ip: Spamtrap.nonce_bind_ip, context: nil)` —
   just the nonce fields, if you need them without the honeypot key.
+- `spamtrap_js_param(honeypot:, at:, context: nil)` — just the `spamtrap_js` field, at the value
+  the inline script would have written for a page rendered at `at`, if you need it without the
+  rest of `spamtrap_params`.
 
 `at:` defaults to five seconds in the past on both, so a token built this way already clears
 `Spamtrap.min_fill_time`'s default 1-second floor (see [Minimum fill time](#minimum-fill-time))
 without you having to think about it. `bind_ip:` lets you build params for an action declared
-with a non-default `nonce_bind_ip:` (see [IP binding](#ip-binding)).
+with a non-default `nonce_bind_ip:` (see [IP binding](#ip-binding)). `context:` lets you build
+params matching an app that has set `Spamtrap.token_context` (see
+[Binding tokens to the host](#binding-tokens-to-the-host-multi-tenant-apps)) — pass the same
+value your `token_context` callable would have returned for the request under test.
 
 ```ruby
 class CommentsControllerTest < ActionController::TestCase

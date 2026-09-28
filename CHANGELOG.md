@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.2] - 2026-09-27
+
+### Added
+- `rails g spamtrap:install` — writes `config/initializers/spamtrap.rb` with every
+  configuration option commented out at its default.
+- `Spamtrap.honeypot_styles` (default `[:textarea]`), also settable via `styles:` on
+  `f.spamtrap` and `spamtrap: { styles: [...] }` on `form_with`/`form_for` — renders additional
+  honeypot decoys alongside the classic hidden textarea: `:text` (a hidden text input named
+  `<honeypot>_input`) and `:checkbox` (an unchecked hidden checkbox named `<honeypot>_check`).
+  All requested styles share the same hiding attributes, are encrypted under mutation, and are
+  checked by the controller regardless of which were actually rendered; the derived names are
+  on the strict-mutation allowlist automatically.
+- `Spamtrap.js_proof` (default `false`), also settable per action via `js_proof:` and per render
+  via `f.spamtrap` or `spamtrap: { js_proof: true }` — renders a hidden `spamtrap_js` field
+  filled in by an inline script as the page is parsed; a submission missing it, or with the
+  wrong value, traps with `reason: :no_js`. Off by default because it excludes users with
+  JavaScript disabled or blocked; it stops clients that never execute JavaScript but not headless
+  browsers, and the expected value is present in the page source (reversed, as obfuscation only).
+- `Spamtrap.suspicious_if`, also settable per action via `suspicious_if:` — a callable receiving
+  `params` (or keywords `params:`, `request:`, `controller:`) that runs after every other check
+  has passed and traps as `reason: :content` when it returns truthy. Keeps spam-filtering logic
+  in the app; spamtrap only gives it the same trap response, `on_trap` callback, and
+  `trap.spamtrap` instrumentation as the built-in checks. An exception raised inside it is
+  logged and treated as not suspicious.
+- `Spamtrap::TestHelper#spamtrap_params` accepts `js_proof: true`.
+- `Spamtrap::TestHelper#spamtrap_js_param(honeypot:, at:)` — the `spamtrap_js` field value a
+  page rendered at `at` would have.
+- `:no_js` and `:content` added to the set of `on_trap`/`trap.spamtrap` reasons.
+- `Spamtrap.token_context` (default `nil`) — a callable taking the request and returning a
+  String, mixed into every nonce, mutation, and `js_proof` token so one minted on a hostname
+  doesn't verify on another; off by default so the token format is unchanged for apps that
+  don't set it. `Spamtrap::TestHelper`'s token-building methods (`spamtrap_token`,
+  `spamtrap_decrypt`, `spamtrap_nonce_params`, `spamtrap_js_param`, `spamtrap_mutate`,
+  `spamtrap_params`) all gain a matching `context:` keyword.
+
 ## [0.4.1] - 2026-09-27
 
 ### Added
