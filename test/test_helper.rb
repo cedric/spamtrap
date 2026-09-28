@@ -2,13 +2,17 @@ require 'rubygems'
 require 'rails'
 require 'action_controller'
 require 'action_controller/test_case'
+require 'action_view'
+require 'action_view/test_case'
 require 'minitest/autorun'
 require 'spamtrap'
+require 'spamtrap/test_helper'
 
 class SpamtrapTestApp < Rails::Application
   config.secret_key_base = 'a' * 64
   config.eager_load = false
   config.logger = Logger.new(nil)
+  config.cache_store = :memory_store # a bare app defaults to a file store under tmp/
 end
 
 Rails.application.initialize!
@@ -17,17 +21,40 @@ Rails.application.routes.draw do
   post 'honeypot/create',      to: 'honeypot#create'
   post 'nonce/create',         to: 'nonce#create'
   post 'nonce_timeout/create', to: 'nonce_timeout#create'
+  post 'single_use_nonce/create', to: 'single_use_nonce#create'
   post 'mutation/create',      to: 'mutation#create'
+  post 'strict_mutation/create', to: 'strict_mutation#create'
   post 'nested_mutation/create',  to: 'nested_mutation#create'
   post 'global_defaults/create',  to: 'global_defaults#create'
   post 'global_override/create',  to: 'global_override#create'
   post 'on_trap_global_callback/create',       to: 'on_trap_global_callback#create'
   post 'on_trap_global_nonce_callback/create', to: 'on_trap_global_nonce_callback#create'
   post 'on_trap_per_declaration/create',       to: 'on_trap_per_declaration#create'
+  post 'mutation_echo/create',                 to: 'mutation_echo#create'
+  post 'strict_mutation_echo/create',          to: 'strict_mutation_echo#create'
+  post 'trap_response_unprocessable/create',   to: 'trap_response_unprocessable#create'
+  post 'trap_response_global/create',          to: 'trap_response_global#create'
+  post 'trap_response_override/create',        to: 'trap_response_override#create'
+  post 'trap_response_hash_nonce/create',      to: 'trap_response_hash_nonce#create'
+  post 'trap_response_callable/create',        to: 'trap_response_callable#create'
+  post 'trap_response_redirect_back/create',   to: 'trap_response_redirect_back#create'
+  post 'trap_response_on_trap_redirect/create', to: 'trap_response_on_trap_redirect#create'
+  post 'trap_response_on_trap_payload/create',  to: 'trap_response_on_trap_payload#create'
+  post 'trap_response_bogus/create',           to: 'trap_response_bogus#create'
+  post 'strict_by_default/create',             to: 'strict_by_default#create'
+  post 'strict_mutation_nonce/create',         to: 'strict_mutation_nonce#create'
+  post 'mutation_expired_trap_response/create', to: 'mutation_expired_trap_response#create'
+  post 'mutation_expired_on_trap/create',      to: 'mutation_expired_on_trap#create'
 end
 
 class ActionController::TestCase
+  include Spamtrap::TestHelper
+
   setup do
     @routes = Rails.application.routes
   end
+end
+
+class ActionView::TestCase
+  include Spamtrap::TestHelper
 end
