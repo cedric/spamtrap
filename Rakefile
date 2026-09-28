@@ -1,7 +1,6 @@
 # -*- encoding: utf-8 -*-
-$LOAD_PATH << File.dirname(__FILE__)
 require 'rake/testtask'
-require 'lib/spamtrap/version'
+require_relative 'lib/spamtrap/version'
 
 namespace :gem do
 

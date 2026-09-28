@@ -2,6 +2,133 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-09-27
+
+### Breaking
+- The nonce and mutation token formats have changed (see Security below). Forms rendered by
+  0.3.x are rejected once 0.4.0 is deployed, until each page is re-rendered — because the old
+  tokens don't verify under the new format. Deploy at low-traffic times where possible, and
+  consider setting `trap_response` (new in this release) to something other than the silent
+  `:head` default so affected users get visible feedback instead of a submission that appears
+  to vanish.
+- `on_trap`'s `reason:` value of `:nonce` has been split into `:nonce_missing`,
+  `:nonce_expired`, `:nonce_invalid`, and `:nonce_replayed`. Callbacks that pattern-match on
+  `reason: :nonce` need updating to match the new set.
+- The `spamtrap_mutation_salt` hidden field has been removed. It's replaced by
+  `spamtrap_timestamp`, which now serves as the shared render timestamp for both mutation and
+  the nonce.
+- The view helper now also emits a `spamtrap_nonce_id` hidden field whenever `nonce:` is
+  enabled. Any code that hand-builds spamtrap form fields instead of using `f.spamtrap` needs
+  to add it.
+- `mutate: true` is now strict by default (equivalent to `mutate: :strict`); `:lenient`
+  restores the old remap-only behaviour. Apps using `mutate: true` that post custom top-level
+  params must add them to `Spamtrap.allowed_params` or switch to `:lenient`.
+- The gem's runtime dependency has changed from `rails` to `actionpack`, `actionview`, and
+  `railties` (`>= 7.2`, `< 9`). Rails 7.0 and 7.1 are no longer supported. Apps that relied on
+  the gem pulling in `rails` transitively must depend on it themselves — nearly all Rails apps
+  already do.
+- The honeypot textarea now renders with `tabindex="-1"`, `autocomplete="off"`,
+  `aria-hidden="true"`, and an inline `style="display:none"` by default. Apps whose CSS
+  depended on the textarea being visible in the DOM tree for layout are unaffected, but an app
+  that deliberately kept the honeypot focusable must now pass `tabindex: nil` to restore that.
+- `mutate: true`/`:strict` now allowlists three captcha widgets' response params by default —
+  `g-recaptcha-response`, `h-captcha-response`, `cf-turnstile-response` — since the widget
+  injects them as plaintext and the app can't encrypt them. Any other widget's plaintext param
+  still needs adding to `Spamtrap.allowed_params`.
+
+### Security
+- **Shared GCM IV.** Every mutated field name in a render previously reused the same AES-GCM
+  IV under one key — a specific misuse of AES-GCM that weakens its confidentiality
+  guarantees. Each field now gets its own random IV.
+- **Non-expiring mutation tokens.** A mutated field-name token never expired, so a token
+  captured once stayed valid indefinitely. Tokens now embed the render timestamp as
+  associated data and are rejected once `mutation_timeout` has passed.
+- **Plaintext bypass of mutation.** `mutate: true` hid field names in the rendered HTML, but
+  the controller accepted a submitted plaintext field name exactly like any other param, so a
+  bot that already knew the field names was never actually blocked. `mutate: :strict` is a
+  new mode that rejects any submitted key that isn't a valid mutation token.
+- **Nonce replay and unbounded future timestamps.** The nonce was a deterministic HMAC with
+  no mechanism to detect a repeated submission, and no check on how far a timestamp could sit
+  in the future. `nonce: :single_use` now rejects a repeated `nonce_id`, and a timestamp more
+  than `nonce_skew` seconds in the future is rejected as `:nonce_invalid`.
+
+### Added
+- `nonce: :single_use` — rejects a replayed nonce id, recorded in `Spamtrap.nonce_store`
+  (defaults to `Rails.cache`; needs a real shared cache store in production).
+- `mutate: :strict` — traps any submitted field name that isn't a valid mutation token.
+- `Spamtrap.allowed_params` — extra top-level param names a `:strict` action accepts
+  unencrypted.
+- `Spamtrap.trap_response` — configures the response sent to a trapped submission: `:head`
+  (default), `:no_content`, `:unprocessable`, `:redirect_back`, a callable, or a `Hash` keyed
+  by trap reason with a `:default` key. Also settable per action via `trap_response:`.
+- `Spamtrap.mutation_timeout` — how long a mutation token stays valid; defaults to
+  `Spamtrap.nonce_timeout`.
+- `Spamtrap.nonce_skew` — how far a submitted timestamp may sit in the future before it's
+  rejected.
+- `Spamtrap.nonce_store` — where `nonce: :single_use` records seen nonce ids.
+- `on_trap` now optionally receives `controller:`, `honeypot:`, and `params:` in addition to
+  `reason:` and `request:`; only the keywords a given callback declares are passed, so
+  existing `->(reason:, request:) { ... }` callbacks are unaffected.
+- The field-name remap now recurses into arrays of `fields_for` builders, not just single
+  nested objects.
+- GitHub Actions CI, replacing the old Travis configuration. The matrix covers Ruby 3.4 and 4.0 against Rails 7.2 to 8.1.
+- `Spamtrap.enabled` (default `true`) — global kill switch; `false` skips every check
+  (honeypot, nonce, mutation), for test environments.
+- `Spamtrap.nonce_bind_ip` — `true` (default, binds to the full client IP), `:prefix` (binds
+  to the /24 IPv4 or /48 IPv6 network, tolerating mobile handoffs and CGNAT; an IPv4-mapped
+  IPv6 address is masked as IPv4 first, not folded into one /48), or `false` (not bound at
+  all).
+- `mutate: :lenient` — the old remap-only behaviour, now that `mutate: true` traps plaintext
+  fields by default.
+- `spamtrap/test_helper` (`Spamtrap::TestHelper`, opt-in via `require 'spamtrap/test_helper'`)
+  — `spamtrap_params`, `spamtrap_token`, `spamtrap_decrypt`, and `spamtrap_nonce_params` for
+  building valid params in your own app's tests.
+- `f.spamtrap` now renders `tabindex="-1"`, `autocomplete="off"`, `aria-hidden="true"`, and an
+  inline `style="display:none"` by default, so hiding the honeypot no longer requires app CSS;
+  any of these can be overridden, and `style: nil` removes the inline hide.
+- `spamtrap:` option on `form_with`/`form_for` (e.g.
+  `form_with model: @comment, spamtrap: { mutate: true, nonce: true }`) mints the shared
+  render timestamp at builder construction, so `f.spamtrap` no longer needs to be called
+  before the fields it protects.
+- Mutation now covers every `FormBuilder` field helper, including `radio_button`,
+  `phone_field`, `datetime_field`, `time_zone_select`, `weekday_select`,
+  `collection_check_boxes`, `collection_radio_buttons`, `date_select`, `time_select`,
+  `datetime_select` (multi-parameter names such as `field(1i)` are remapped), and
+  `rich_text_area` when Action Text is loaded.
+- Mutated fields keep `id`/label `for` attributes derived from the real field name instead of
+  the encrypted one, so CSS, Stimulus targets, and autofill keep working; opt out with
+  `Spamtrap.stable_ids = false`. `field_with_errors` wrapping works on mutated fields again.
+- `Spamtrap::NoRequestError` — raised when nonce fields are rendered without a request
+  (mailers, `ApplicationController.render` outside a request).
+- `Spamtrap::Controller::CAPTCHA_PARAMS` — the three captcha response params allowlisted by
+  default under strict mutation.
+- `spamtrap_mutate(hash, at:)` on `Spamtrap::TestHelper` — encrypts every field name in a
+  whole params hash the way the form builder renders them, so it round-trips through a
+  `mutate:`-protected action without hand-building a token per field.
+- `fields:` keyword on `spamtrap_params` — merges in a fields hash, through `spamtrap_mutate`
+  first when `mutate:` is truthy, so a single call builds the whole POST for a protected
+  action's test.
+
+### Changed
+- Each field name is encrypted to a single token per render, shared with `fields_for` children.
+  Indexless array params such as `items[][name]` need the repeated key to split into separate
+  records; with a fresh token per child builder, every record was merged into one.
+- An expired mutation render (older than `mutation_timeout`, or too far in the future) now
+  traps as `reason: :mutation_expired` in `:lenient` mode as well as `:strict` — previously
+  only `:strict` checked it, so a stale-but-decryptable `:lenient` submission was silently
+  accepted. In both modes, every field is now decrypted and remapped to its real name before
+  the trap fires, with no additional staleness bound on that remap, so `on_trap` and a
+  `trap_response` callable can re-render the form with what the user actually typed instead of
+  an empty one.
+- The nonce's HMAC key is now derived via HKDF from `secret_key_base` (rather than using
+  `secret_key_base` directly) and the digest is now bound to the honeypot field name, so a
+  valid nonce for one honeypot can't be replayed against another.
+- Removed Travis and Rails 3/4 compatibility scaffolding.
+- Spamtrap now installs itself via `Spamtrap::Railtie` from `on_load` hooks instead of
+  patching `ActionController::Base`/`FormBuilder` at require time, so the patches land after
+  app initializers run rather than forcing Action Controller to load first. Outside a Rails
+  app, call `Spamtrap.install!` yourself after Action Controller and Action View are loaded.
+
 ## [0.3.5] - 2026-07-08
 
 ### Fixed

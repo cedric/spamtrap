@@ -3,16 +3,42 @@
 require File.join(File.dirname(__FILE__), 'test_helper')
 require 'action_view'
 require 'action_view/test_case'
+require 'active_model'
+
+# A simple id/name pair, for collection_check_boxes/collection_radio_buttons tests.
+Author = Struct.new(:id, :name)
 
 # A simple model-like struct to back the form builder, mimicking an AR model.
-Message = Struct.new(:name, :email, :body, :active, :country)
+Message = Struct.new(
+  :name, :email, :body, :active, :country,
+  :phone, :born_at, :category, :author_ids, :author_id,
+  :zone, :weekday, :meeting_at, :meeting_date, :meeting_time, :content
+)
+
+# A model with real ActiveModel errors, for field_with_errors wrapping tests.
+class ErroredMessage
+  include ActiveModel::Model
+  attr_accessor :name
+end
 
 class FormBuilderMutationTest < ActionView::TestCase
   include Spamtrap::Crypto
 
+  teardown do
+    Spamtrap.stable_ids = nil
+  end
+
   # Build a minimal form builder instance backed by a Message object.
   def build_form_builder(object)
     ActionView::Helpers::FormBuilder.new(:message, object, self, {})
+  end
+
+  # Build a Message with only the given attributes set, by name, so tests don't
+  # have to count positional Struct.new arguments.
+  def build_message(**attrs)
+    msg = Message.new
+    attrs.each { |k, v| msg[k] = v }
+    msg
   end
 
   # --- text-like inputs ---
@@ -165,10 +191,323 @@ class FormBuilderMutationTest < ActionView::TestCase
     assert_includes html, 'Name'
   end
 
-  private
+  # --- per-field IV ---
 
-  # ActionView::TestCase helpers expect a #request method; provide a stub.
-  def request
-    @request ||= ActionDispatch::TestRequest.create
+  def test_distinct_fields_get_distinct_ivs
+    msg = Message.new('Alice', 'alice@example.com', 'Hello')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    name_token  = f.text_field(:name)[/name="message\[([^\]]+)\]"/, 1]
+    email_token = f.email_field(:email)[/name="message\[([^\]]+)\]"/, 1]
+    timestamp   = f.instance_variable_get(:@spamtrap_timestamp)
+
+    refute_equal name_token[0, 16], email_token[0, 16]
+    assert_equal :name,  spamtrap_decrypt(name_token,  timestamp)
+    assert_equal :email, spamtrap_decrypt(email_token, timestamp)
   end
+
+  def test_label_and_field_share_the_same_token
+    msg = Message.new('Alice', 'alice@example.com', 'Hello')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    label_for = f.label(:body)[/for="([^"]+)"/, 1]
+    field_id  = f.text_field(:body)[/id="([^"]+)"/, 1]
+
+    assert_equal field_id, label_for
+  end
+
+  def test_spamtrap_emits_timestamp_once_when_mutate_and_nonce_are_both_enabled
+    msg = Message.new('Alice', 'alice@example.com', 'Hello')
+    f   = build_form_builder(msg)
+
+    html = f.spamtrap(:x, mutate: true, nonce: true)
+
+    assert_equal 1, html.scan('name="spamtrap_timestamp"').size
+    assert_equal 1, html.scan('name="spamtrap_nonce_id"').size
+    assert_equal 1, html.scan('name="spamtrap_nonce"').size
+    refute_includes html, 'spamtrap_mutation_salt'
+  end
+
+  # --- honeypot defaults (task 1) ---
+
+  def test_spamtrap_honeypot_has_autofill_and_accessibility_safe_defaults
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap)
+
+    assert_match(/tabindex="-1"/, html)
+    assert_match(/autocomplete="off"/, html)
+    assert_match(/aria-hidden="true"/, html)
+    assert_match(/style="display:none"/, html)
+    assert_match(/class="spamtrap"/, html)
+  end
+
+  def test_spamtrap_honeypot_style_nil_drops_inline_style_but_keeps_other_defaults
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, style: nil)
+
+    refute_match(/style=/, html)
+    assert_match(/tabindex="-1"/, html)
+    assert_match(/autocomplete="off"/, html)
+    assert_match(/aria-hidden="true"/, html)
+  end
+
+  # --- spamtrap: options at builder construction (task 2) ---
+
+  def test_form_with_spamtrap_option_mutates_fields_rendered_before_f_spamtrap
+    html = form_with(scope: :message, url: '/x', spamtrap: { mutate: true }) do |f|
+      f.text_field(:name) + f.spamtrap(:trap)
+    end
+
+    refute_match(/name="message\[name\]"/, html)
+    assert_equal 1, html.scan('name="spamtrap_timestamp"').size
+    refute_match(/<form[^>]*\sspamtrap="/, html)
+  end
+
+  def test_form_for_spamtrap_option_mutates_fields_rendered_before_f_spamtrap
+    html = form_for(:message, url: '/x', spamtrap: { mutate: true }) do |f|
+      f.text_field(:name) + f.spamtrap(:trap)
+    end
+
+    refute_match(/name="message\[name\]"/, html)
+    assert_equal 1, html.scan('name="spamtrap_timestamp"').size
+    refute_match(/<form[^>]*\sspamtrap="/, html)
+  end
+
+  # --- request-less rendering guard (task 3) ---
+
+  def test_spamtrap_nonce_fields_without_a_request_raises_no_request_error
+    msg = Message.new
+    f   = build_form_builder(msg)
+
+    original_request = request
+    self.request = nil
+
+    error = assert_raises(Spamtrap::NoRequestError) { f.spamtrap(:trap, nonce: true) }
+    assert_match(/render the form inside a request/, error.message)
+  ensure
+    self.request = original_request
+  end
+
+  # --- radio_button (task 4) ---
+
+  def test_radio_button_checked_reflects_model_value_and_name_is_encrypted
+    msg = build_message(category: 'rails')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    checked_html   = f.radio_button(:category, 'rails')
+    unchecked_html = f.radio_button(:category, 'java')
+
+    refute_match(/name="message\[category\]"/, checked_html)
+    assert_match(/checked="checked"/, checked_html)
+    refute_match(/checked/, unchecked_html)
+  end
+
+  # --- phone_field / datetime_field (task 4) ---
+
+  def test_phone_field_value_reflects_model_and_name_is_encrypted
+    msg  = build_message(phone: '555-1234')
+    f    = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.phone_field(:phone)
+
+    assert_includes html, '555-1234'
+    refute_match(/name="message\[phone\]"/, html)
+  end
+
+  def test_datetime_field_value_reflects_model_and_name_is_encrypted
+    msg  = build_message(born_at: Time.utc(2020, 1, 2, 3, 4))
+    f    = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.datetime_field(:born_at)
+
+    assert_includes html, '2020-01-02T03:04'
+    refute_match(/name="message\[born_at\]"/, html)
+  end
+
+  # --- time_zone_select / weekday_select (task 4) ---
+
+  def test_time_zone_select_selected_reflects_model_and_name_is_encrypted
+    msg  = build_message(zone: 'Eastern Time (US & Canada)')
+    f    = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.time_zone_select(:zone)
+
+    refute_match(/name="message\[zone\]"/, html)
+    assert_match(/selected="selected"/, html)
+    assert_includes html, 'Eastern Time'
+  end
+
+  def test_weekday_select_selected_reflects_model_and_name_is_encrypted
+    msg  = build_message(weekday: 'Monday')
+    f    = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.weekday_select(:weekday)
+
+    refute_match(/name="message\[weekday\]"/, html)
+    assert_match(/selected="selected"/, html)
+    assert_includes html, 'Monday'
+  end
+
+  # --- collection_check_boxes / collection_radio_buttons (task 4) ---
+
+  def test_collection_check_boxes_checked_reflects_model_and_name_is_encrypted
+    msg     = build_message(author_ids: [2])
+    f       = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+    authors = [Author.new(1, 'Alice'), Author.new(2, 'Bob')]
+
+    html = f.collection_check_boxes(:author_ids, authors, :id, :name)
+
+    refute_match(/name="message\[author_ids\]/, html)
+    assert_match(/value="2"[^>]*checked="checked"/, html)
+    refute_match(/value="1"[^>]*checked="checked"/, html)
+  end
+
+  def test_collection_radio_buttons_checked_reflects_model_and_name_is_encrypted
+    msg     = build_message(author_id: 2)
+    f       = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+    authors = [Author.new(1, 'Alice'), Author.new(2, 'Bob')]
+
+    html = f.collection_radio_buttons(:author_id, authors, :id, :name)
+
+    refute_match(/name="message\[author_id\]/, html)
+    assert_match(/value="2"[^>]*checked="checked"/, html)
+    refute_match(/value="1"[^>]*checked="checked"/, html)
+  end
+
+  # --- date_select / time_select / datetime_select (task 4) ---
+
+  # Every rendered <select> name must be an encrypted base token plus Rails' own
+  # multiparameter suffix (e.g. "(1i)"), and the base token must decrypt back to
+  # the real field name.
+  def assert_multiparameter_names_decrypt_to(html, field, timestamp)
+    names = html.scan(/name="([^"]+)"/).flatten
+    refute_empty names
+    names.each do |name|
+      assert_match(/\Amessage\[[A-Za-z0-9_-]+\(\d[a-z]\)\]\z/, name)
+      token = name[/\Amessage\[([A-Za-z0-9_-]+)\(\d[a-z]\)\]\z/, 1]
+      assert_equal field, spamtrap_decrypt(token, timestamp)
+    end
+  end
+
+  def test_date_select_names_are_encrypted_multiparameter_fields
+    msg = build_message(meeting_date: Date.new(2020, 1, 2))
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.date_select(:meeting_date)
+    assert_multiparameter_names_decrypt_to(html, :meeting_date, f.instance_variable_get(:@spamtrap_timestamp))
+  end
+
+  def test_time_select_names_are_encrypted_multiparameter_fields
+    msg = build_message(meeting_time: Time.utc(2020, 1, 2, 3, 4))
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.time_select(:meeting_time)
+    assert_multiparameter_names_decrypt_to(html, :meeting_time, f.instance_variable_get(:@spamtrap_timestamp))
+  end
+
+  def test_datetime_select_names_are_encrypted_multiparameter_fields
+    msg = build_message(meeting_at: Time.utc(2020, 1, 2, 3, 4))
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.datetime_select(:meeting_at)
+    assert_multiparameter_names_decrypt_to(html, :meeting_at, f.instance_variable_get(:@spamtrap_timestamp))
+  end
+
+  # --- rich_text_area (task 4) ---
+
+  def test_rich_text_area_raises_clear_error_when_action_text_is_not_loaded
+    msg = build_message(content: 'hello')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    error = assert_raises(NoMethodError) { f.rich_text_area(:content) }
+    assert_match(/rich_text_area/, error.message)
+  end
+
+  # --- stable ids (task 5) ---
+
+  def test_stable_ids_on_text_field_id_is_derived_from_real_field_name
+    msg = build_message(name: 'Alice')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.text_field(:name)
+
+    assert_match(/id="message_name"/, html)
+    refute_match(/name="message\[name\]"/, html)
+  end
+
+  def test_stable_ids_on_label_for_matches_the_real_field_id
+    msg = build_message(name: 'Alice')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    assert_match(/for="message_name"/, f.label(:name))
+  end
+
+  def test_stable_ids_false_uses_the_opaque_encrypted_id
+    Spamtrap.stable_ids = false
+    msg = build_message(name: 'Alice')
+    f   = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    html = f.text_field(:name)
+
+    refute_match(/id="message_name"/, html)
+  end
+
+  # --- field_with_errors wrapping (task 5) ---
+
+  def test_field_with_errors_wraps_mutated_text_field_and_label_exactly_once
+    msg = ErroredMessage.new(name: 'Al')
+    msg.errors.add(:name, 'is too short')
+
+    f = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    field_html = f.text_field(:name)
+    label_html = f.label(:name)
+
+    assert_equal 1, field_html.scan('field_with_errors').size
+    assert_equal 1, label_html.scan('field_with_errors').size
+    assert_match(/\A<div class="field_with_errors">.*<\/div>\z/, field_html)
+  end
+
+  def test_field_without_errors_is_not_wrapped
+    msg = ErroredMessage.new(name: 'Alice')
+
+    f = build_form_builder(msg)
+    f.spamtrap(:trap, mutate: true)
+
+    refute_match(/field_with_errors/, f.text_field(:name))
+  end
+
+
+  def test_fields_for_children_share_one_token_per_field_name
+    f = build_form_builder(Message.new('Alice'))
+    f.spamtrap(:trap, mutate: true)
+    names = 2.times.map do
+      html = +''
+      f.fields_for(:items) { |c| html << c.text_field(:name) }
+      html[/name="([^"]*)"/, 1]
+    end
+    assert_equal 1, names.uniq.size, names.inspect
+    assert_match(/\Amessage\[items\]\[[A-Za-z0-9_-]+\]\z/, names.first)
+    assert_equal f.text_field(:name)[/name="message\[([^\]]+)\]"/, 1], names.first[/\]\[([^\]]+)\]\z/, 1]
+  end
+
 end
