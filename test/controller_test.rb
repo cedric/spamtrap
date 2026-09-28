@@ -1,3 +1,4 @@
+require 'stringio'
 require File.join(File.dirname(__FILE__), 'test_helper')
 
 # Test controllers — render a body so we can distinguish a real response
@@ -1992,5 +1993,468 @@ class MutationOnlyFillTimeTest < ActionController::TestCase
     assert_response :ok
     assert_equal 'body', response.body
     assert_empty @reasons
+  end
+end
+
+# Task 1: honeypot decoys. StrictMutationController checks all three of
+# Spamtrap.honeypot_fields regardless of which style(s) the view rendered.
+class StrictMutationHoneypotDecoyTest < ActionController::TestCase
+  tests StrictMutationController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << reason }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_filled_text_decoy_traps
+    timestamp = Time.now.to_i
+    post :create, params: {
+      trap_field: '', trap_field_input: 'bot text', trap_field_check: '',
+      spamtrap_timestamp: timestamp,
+      comment: { spamtrap_token('body', timestamp) => 'Hello' }
+    }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:honeypot], @calls
+  end
+
+  def test_checked_checkbox_decoy_traps
+    timestamp = Time.now.to_i
+    post :create, params: {
+      trap_field: '', trap_field_input: '', trap_field_check: '1',
+      spamtrap_timestamp: timestamp,
+      comment: { spamtrap_token('body', timestamp) => 'Hello' }
+    }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:honeypot], @calls
+  end
+
+  def test_all_decoys_empty_passes
+    timestamp = Time.now.to_i
+    post :create, params: {
+      trap_field: '', trap_field_input: '', trap_field_check: '',
+      spamtrap_timestamp: timestamp,
+      comment: { spamtrap_token('body', timestamp) => 'Hello' }
+    }
+    assert_response :ok
+    assert_equal 'body', response.body
+    assert_empty @calls
+  end
+
+  def test_filled_decoy_under_its_encrypted_name_traps
+    timestamp     = Time.now.to_i
+    decoy_name    = spamtrap_token('trap_field_input', timestamp)
+    body_token    = spamtrap_token('body', timestamp)
+
+    post :create, params: {
+      trap_field: '',
+      decoy_name => 'bot text',
+      spamtrap_timestamp: timestamp,
+      comment: { body_token => 'Hello' }
+    }
+
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:honeypot], @calls
+  end
+end
+
+# Task 2: JS proof of presence.
+class JsProofController < ActionController::Base
+  spamtrap :trap_field, nonce: true, js_proof: true, only: :create
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class JsProofControllerTest < ActionController::TestCase
+  tests JsProofController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << reason }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_missing_js_field_traps_as_no_js
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    post :create, params: params
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:no_js], @calls
+  end
+
+  def test_wrong_js_value_traps_as_no_js
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '', spamtrap_js: 'bogus' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    post :create, params: params
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:no_js], @calls
+  end
+
+  def test_valid_js_param_passes
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '' }
+      .merge(spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp))
+      .merge(spamtrap_js_param(honeypot: 'trap_field', at: timestamp))
+    post :create, params: params
+    assert_response :ok
+    assert_equal 'success', response.body
+    assert_empty @calls
+  end
+end
+
+class JsProofGlobalControllerTest < ActionController::TestCase
+  tests NonceController
+
+  setup do
+    Spamtrap.js_proof = true
+  end
+
+  teardown do
+    Spamtrap.js_proof = false
+  end
+
+  def test_global_js_proof_applies_to_an_action_without_the_option
+    timestamp = Time.now.to_i - 5
+    params = { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp)
+    )
+    post :create, params: params
+    assert_response :ok
+    assert_empty response.body
+  end
+end
+
+class JsProofSpamtrapParamsHelperTest < ActionController::TestCase
+  tests JsProofController
+
+  def test_spamtrap_params_helper_passes_the_whole_gauntlet
+    timestamp = Time.now.to_i - 5
+    params = spamtrap_params(honeypot: 'trap_field', nonce: true, js_proof: true, at: timestamp)
+    post :create, params: params
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+end
+
+# Task 3: content hook. A truthy suspicious_if is the last check, run after every other one.
+class ContentHookController < ActionController::Base
+  spamtrap :trap_field, only: :create,
+    suspicious_if: ->(params) { params[:comment][:body].to_s.include?('http') }
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class ContentHookControllerTest < ActionController::TestCase
+  tests ContentHookController
+
+  setup do
+    @calls = []
+    Spamtrap.on_trap = ->(reason:, request:) { @calls << reason }
+  end
+
+  teardown do
+    Spamtrap.on_trap = nil
+  end
+
+  def test_body_containing_a_link_is_trapped_as_content
+    post :create, params: { trap_field: '', comment: { body: 'check out http://spam.example' } }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:content], @calls
+  end
+
+  def test_body_without_a_link_passes
+    post :create, params: { trap_field: '', comment: { body: 'a normal comment' } }
+    assert_response :ok
+    assert_equal 'success', response.body
+    assert_empty @calls
+  end
+end
+
+class ContentHookKeywordController < ActionController::Base
+  spamtrap :trap_field, only: :create,
+    suspicious_if: ->(request:, **) { request.remote_ip == '9.9.9.9' }
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class ContentHookKeywordControllerTest < ActionController::TestCase
+  tests ContentHookKeywordController
+
+  def test_matching_remote_ip_is_trapped
+    @request.remote_addr = '9.9.9.9'
+    post :create, params: { trap_field: '' }
+    assert_response :ok
+    assert_empty response.body
+  end
+
+  def test_non_matching_remote_ip_passes
+    @request.remote_addr = '1.2.3.4'
+    post :create, params: { trap_field: '' }
+    assert_response :ok
+    assert_equal 'success', response.body
+  end
+end
+
+class ContentHookRaisingController < ActionController::Base
+  spamtrap :trap_field, only: :create, suspicious_if: ->(params) { raise 'boom' }
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class ContentHookRaisingControllerTest < ActionController::TestCase
+  tests ContentHookRaisingController
+
+  def test_raising_hook_logs_and_passes
+    io = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = Logger.new(io)
+
+    post :create, params: { trap_field: '' }
+
+    assert_response :ok
+    assert_equal 'success', response.body
+    assert_match(/boom/, io.string)
+  ensure
+    Rails.logger = original_logger
+  end
+end
+
+class ContentHookNotCalledController < ActionController::Base
+  spamtrap :trap_field, only: :create,
+    suspicious_if: ->(params) { Thread.current[:content_hook_calls] += 1; false }
+
+  def create
+    render plain: 'success'
+  end
+end
+
+class ContentHookNotCalledOnEarlierTrapTest < ActionController::TestCase
+  tests ContentHookNotCalledController
+
+  setup do
+    Thread.current[:content_hook_calls] = 0
+  end
+
+  teardown do
+    Thread.current[:content_hook_calls] = nil
+  end
+
+  def test_hook_not_called_when_an_earlier_check_already_trapped
+    post :create, params: { trap_field: 'spam' }
+    assert_response :ok
+    assert_empty response.body
+    assert_equal 0, Thread.current[:content_hook_calls]
+  end
+
+  def test_hook_called_once_when_nothing_earlier_traps
+    post :create, params: { trap_field: '' }
+    assert_response :ok
+    assert_equal 'success', response.body
+    assert_equal 1, Thread.current[:content_hook_calls]
+  end
+end
+
+# js_proof without nonce or mutation: the timestamp is unsigned, so only its age bounds the token.
+class JsProofOnlyController < ActionController::Base
+  spamtrap :trap_field, js_proof: true, only: :create
+  def create; render plain: 'ok'; end
+end
+
+class JsProofExpiryTest < ActionController::TestCase
+  tests JsProofOnlyController
+
+  def test_fresh_js_token_passes
+    at = Time.now.to_i - 5
+    post :create, params: { trap_field: '', spamtrap_timestamp: at }.merge(spamtrap_js_param(honeypot: 'trap_field', at: at))
+    assert_response :ok
+    assert_equal 'ok', response.body
+  end
+
+  def test_js_token_older_than_nonce_timeout_is_rejected
+    old = Time.now.to_i - Spamtrap.nonce_timeout - 10
+    post :create, params: { trap_field: '', spamtrap_timestamp: old }.merge(spamtrap_js_param(honeypot: 'trap_field', at: old))
+    assert_response :ok
+    assert_empty response.body
+  end
+end
+
+# Strict mutation plus JS proof: spamtrap_js must be on the framework allowlist or it traps as plaintext first.
+class StrictJsProofController < ActionController::Base
+  spamtrap :trap_field, mutate: :strict, nonce: true, js_proof: true, only: :create
+  def create; render plain: 'ok'; end
+end
+
+class StrictJsProofControllerTest < ActionController::TestCase
+  tests StrictJsProofController
+
+  setup do
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+  end
+  teardown { Spamtrap.on_trap = nil }
+
+  def test_full_gauntlet_passes_and_missing_js_reports_no_js_not_plaintext
+    at = Time.now.to_i - 5
+    base = spamtrap_params(honeypot: 'trap_field', nonce: true, mutate: true, js_proof: true, at: at)
+                 .merge(comment: { spamtrap_token('body', at) => 'hi' })
+    post :create, params: base
+    assert_equal 'ok', response.body
+
+    post :create, params: base.merge(spamtrap_js: '')
+    assert_empty response.body
+    assert_equal [:no_js], @reasons
+  end
+end
+
+# Spamtrap.token_context: opt-in binding of every token to a value derived from the request
+# (e.g. host), so a token minted on one hostname doesn't verify on another.
+class TokenContextNonceControllerTest < ActionController::TestCase
+  tests NonceController
+
+  setup do
+    Spamtrap.token_context = ->(request) { request.host }
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+  end
+
+  teardown do
+    Spamtrap.token_context = nil
+    Spamtrap.on_trap = nil
+  end
+
+  def test_nonce_minted_for_the_request_host_passes_on_that_host
+    timestamp = Time.now.to_i
+    @request.host = 'a.example'
+    post :create, params: { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp, context: 'a.example')
+    )
+    assert_response :ok
+    assert_equal 'success', response.body
+    assert_empty @reasons
+  end
+
+  def test_nonce_minted_for_a_different_host_is_rejected
+    timestamp = Time.now.to_i
+    @request.host = 'b.example'
+    post :create, params: { trap_field: '' }.merge(
+      spamtrap_nonce_params(honeypot: 'trap_field', ip: '0.0.0.0', at: timestamp, context: 'a.example')
+    )
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:nonce_invalid], @reasons
+  end
+end
+
+class TokenContextMutationControllerTest < ActionController::TestCase
+  tests StrictMutationController
+
+  setup do
+    Spamtrap.token_context = ->(request) { request.host }
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+  end
+
+  teardown do
+    Spamtrap.token_context = nil
+    Spamtrap.on_trap = nil
+  end
+
+  def test_mutation_token_minted_for_the_request_host_remaps_on_that_host
+    timestamp  = Time.now.to_i
+    body_token = spamtrap_token('body', timestamp, context: 'a.example')
+    @request.host = 'a.example'
+
+    post :create, params: { trap_field: '', spamtrap_timestamp: timestamp, comment: { body_token => 'Hello' } }
+
+    assert_response :ok
+    assert_equal 'body', response.body
+    assert_empty @reasons
+  end
+
+  def test_mutation_token_minted_for_a_different_host_is_rejected_as_plaintext
+    timestamp  = Time.now.to_i
+    body_token = spamtrap_token('body', timestamp, context: 'a.example')
+    @request.host = 'b.example'
+
+    post :create, params: { trap_field: '', spamtrap_timestamp: timestamp, comment: { body_token => 'Hello' } }
+
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:plaintext_field], @reasons
+  end
+end
+
+class TokenContextJsProofControllerTest < ActionController::TestCase
+  tests JsProofOnlyController
+
+  setup do
+    Spamtrap.token_context = ->(request) { request.host }
+    @reasons = []
+    Spamtrap.on_trap = ->(reason:) { @reasons << reason }
+  end
+
+  teardown do
+    Spamtrap.token_context = nil
+    Spamtrap.on_trap = nil
+  end
+
+  def test_js_proof_minted_for_the_request_host_passes_on_that_host
+    at = Time.now.to_i - 5
+    @request.host = 'a.example'
+    post :create, params: { trap_field: '', spamtrap_timestamp: at }.merge(
+      spamtrap_js_param(honeypot: 'trap_field', at: at, context: 'a.example')
+    )
+    assert_response :ok
+    assert_equal 'ok', response.body
+    assert_empty @reasons
+  end
+
+  def test_js_proof_minted_for_a_different_host_is_rejected
+    at = Time.now.to_i - 5
+    @request.host = 'b.example'
+    post :create, params: { trap_field: '', spamtrap_timestamp: at }.merge(
+      spamtrap_js_param(honeypot: 'trap_field', at: at, context: 'a.example')
+    )
+    assert_response :ok
+    assert_empty response.body
+    assert_equal [:no_js], @reasons
+  end
+end
+
+# With Spamtrap.token_context unset (the default), context is nil throughout, so a token
+# minted with no context must behave exactly as before this feature existed.
+class TokenContextUnsetTest < Minitest::Test
+  def test_nonce_digest_with_nil_context_matches_the_pre_token_context_message_format
+    timestamp = Time.now.to_i
+    key = Spamtrap::Crypto.keys_for(Spamtrap.secret_key_base)[:nonce]
+    expected = OpenSSL::HMAC.hexdigest('SHA256', key, "v1:#{timestamp}:0.0.0.0:trap_field:#{'a' * 32}")
+
+    actual = Spamtrap::TestHelper::TokenHelper.new.spamtrap_nonce_digest(timestamp, '0.0.0.0', 'trap_field', 'a' * 32)
+
+    assert_equal expected, actual
   end
 end

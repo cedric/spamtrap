@@ -139,6 +139,8 @@ module Spamtrap
       @spamtrap_options = options[:spamtrap] if options[:spamtrap].is_a?(Hash)
       @spamtrap_timestamp = options[:spamtrap_timestamp] if options[:spamtrap_timestamp]
       @spamtrap_tokens    = options[:spamtrap_tokens]    if options[:spamtrap_tokens]
+      # A fields_for child inherits its parent's already-computed context (may legitimately be nil).
+      @spamtrap_context   = options[:spamtrap_context]   if options.key?(:spamtrap_context)
       # Mint the shared timestamp up front so mutation works no matter where f.spamtrap
       # is called in the form (or if it's never called at all).
       @spamtrap_timestamp ||= Time.now.to_i if @spamtrap_options && @spamtrap_options[:mutate]
@@ -147,8 +149,9 @@ module Spamtrap
     def fields_for(record_name, record_object = nil, fields_options = {}, &block)
       if @spamtrap_timestamp
         # Children share the parent's token cache: indexless `items[][name]` arrays only split
-        # into separate records when the same field name repeats as the same key.
-        shared = { spamtrap_timestamp: @spamtrap_timestamp, spamtrap_tokens: (@spamtrap_tokens ||= {}) }
+        # into separate records when the same field name repeats as the same key. spamtrap_context
+        # is computed here (not left lazy) so a child never needs its own request.
+        shared = { spamtrap_timestamp: @spamtrap_timestamp, spamtrap_tokens: (@spamtrap_tokens ||= {}), spamtrap_context: spamtrap_context }
         if record_object.is_a?(Hash) && record_object.extractable_options?
           record_object = record_object.merge(shared)
         else
@@ -164,7 +167,21 @@ module Spamtrap
     # call would make <label for> and <input id> mismatch and split indexless array records.
     def spamtrap_token_for(field)
       @spamtrap_tokens ||= {}
-      @spamtrap_tokens[field.to_s] ||= spamtrap_encrypt_field(field.to_s, @spamtrap_timestamp)
+      @spamtrap_tokens[field.to_s] ||= spamtrap_encrypt_field(field.to_s, spamtrap_aad(@spamtrap_timestamp, spamtrap_context))
+    end
+
+    # Memoized per builder (nil is a legitimate result when Spamtrap.token_context is unset),
+    # so every token this builder mints — mutation, nonce, js proof — binds to the same context.
+    def spamtrap_context
+      return @spamtrap_context if defined?(@spamtrap_context)
+
+      @spamtrap_context =
+        if Spamtrap.token_context
+          unless @template.respond_to?(:request) && @template.request
+            raise Spamtrap::NoRequestError, 'Spamtrap.token_context needs a request; render the form inside a request or unset Spamtrap.token_context'
+          end
+          Spamtrap.token_context_for(@template.request)
+        end
     end
 
     # Fills in the key each helper reads its pre-filled state from (:value, :checked,
@@ -217,24 +234,23 @@ end
 # (via the Railtie in a Rails app) rather than by reopening the class at require time.
 module Spamtrap::FormBuilderHelper
   def spamtrap(parameter = 'spamtrap', options = {})
-    mutate  = options.key?(:mutate)         ? options.delete(:mutate)         : spamtrap_option_default(:mutate)
-    nonce   = options.key?(:nonce)          ? options.delete(:nonce)          : spamtrap_option_default(:nonce)
-    bind_ip = options.key?(:nonce_bind_ip)  ? options.delete(:nonce_bind_ip)  : spamtrap_option_default(:nonce_bind_ip)
+    mutate   = options.key?(:mutate)        ? options.delete(:mutate)        : spamtrap_option_default(:mutate)
+    nonce    = options.key?(:nonce)         ? options.delete(:nonce)         : spamtrap_option_default(:nonce)
+    bind_ip  = options.key?(:nonce_bind_ip) ? options.delete(:nonce_bind_ip) : spamtrap_option_default(:nonce_bind_ip)
+    styles   = Array(options.key?(:styles) ? options.delete(:styles) : spamtrap_option_default(:styles))
+    js_proof = options.key?(:js_proof)      ? options.delete(:js_proof)      : spamtrap_option_default(:js_proof)
     options.reverse_merge!(class: 'spamtrap', tabindex: -1, autocomplete: 'off', 'aria-hidden' => true, style: 'display:none')
 
-    # One timestamp per render, shared by mutation tokens and the nonce HMAC, so the hidden
-    # field is emitted once whether one or both features are on. Reuse the timestamp already
-    # minted at builder construction (spamtrap: { mutate: true }) instead of a fresh one.
-    timestamp = @spamtrap_timestamp || (Time.now.to_i if mutate || nonce)
+    # One timestamp per render, shared by mutation tokens, the nonce HMAC, and js_proof, so the
+    # hidden field is emitted once no matter which subset of these features is on. Reuse the
+    # timestamp already minted at builder construction (spamtrap: { mutate: true }) instead of a fresh one.
+    timestamp = @spamtrap_timestamp || (Time.now.to_i if mutate || nonce || js_proof)
     @spamtrap_timestamp = timestamp if mutate
 
-    # Mutate the honeypot's own name too, or its static name is the one field a bot can
-    # learn to skip; id stays opaque (no stable_ids) since a stable honeypot id would out it.
-    honeypot_field = @spamtrap_timestamp ? spamtrap_token_for(parameter.to_s) : parameter
-
-    @template.text_area_tag(honeypot_field, nil, options) +
-      ((mutate || nonce) ? @template.hidden_field_tag(:spamtrap_timestamp, timestamp) : ''.html_safe) +
-      (nonce ? spamtrap_nonce_fields(timestamp, parameter.to_s, bind_ip) : ''.html_safe)
+    spamtrap_honeypot_tags(parameter, styles, options) +
+      ((mutate || nonce || js_proof) ? @template.hidden_field_tag(:spamtrap_timestamp, timestamp) : ''.html_safe) +
+      (nonce ? spamtrap_nonce_fields(timestamp, parameter.to_s, bind_ip) : ''.html_safe) +
+      (js_proof ? spamtrap_js_tags(timestamp, parameter.to_s) : ''.html_safe)
   end
 
   private
@@ -243,8 +259,27 @@ module Spamtrap::FormBuilderHelper
     if @spamtrap_options&.key?(key)
       @spamtrap_options[key]
     else
-      Spamtrap.public_send(key)
+      # :styles has no same-named Spamtrap global; it maps to honeypot_styles instead.
+      Spamtrap.public_send(key == :styles ? :honeypot_styles : key)
     end
+  end
+
+  # One decoy per requested style, all sharing the same hiding options; each decoy's own name
+  # is mutated (see spamtrap_token_for) exactly like the classic textarea's is.
+  def spamtrap_honeypot_tags(parameter, styles, options)
+    field_names = Spamtrap.honeypot_fields(parameter)
+
+    styles.map do |style|
+      raise ArgumentError, "unknown spamtrap honeypot style: #{style.inspect}" unless field_names.key?(style)
+
+      name = @spamtrap_timestamp ? spamtrap_token_for(field_names[style]) : field_names[style]
+
+      case style
+      when :textarea then @template.text_area_tag(name, nil, options)
+      when :text      then @template.text_field_tag(name, nil, options)
+      when :checkbox  then @template.check_box_tag(name, '1', false, options)
+      end
+    end.inject(:+)
   end
 
   def spamtrap_nonce_fields(timestamp, honeypot, bind_ip)
@@ -254,9 +289,21 @@ module Spamtrap::FormBuilderHelper
 
     ip       = @template.request.remote_ip
     nonce_id = SecureRandom.hex(16)
-    nonce    = spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id, bind_ip: bind_ip)
+    nonce    = spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id, bind_ip: bind_ip, context: spamtrap_context)
 
     @template.hidden_field_tag(:spamtrap_nonce_id, nonce_id) +
       @template.hidden_field_tag(:spamtrap_nonce, nonce)
+  end
+
+  # A hidden field only an executing script fills in, plus the inline script that fills it.
+  # javascript_tag(nonce: true) attaches a CSP nonce automatically when the app configures one.
+  def spamtrap_js_tags(timestamp, honeypot)
+    id     = "spamtrap_js_#{SecureRandom.hex(4)}"
+    digest = spamtrap_js_digest(timestamp, honeypot, context: spamtrap_context)
+    # Embedded reversed so a naive regex scrape of the page source won't find it; obfuscation, not security.
+    script = %{(function(){var i=document.getElementById("#{id}");if(i){i.value="#{digest.reverse}".split("").reverse().join("");}})();}
+
+    @template.hidden_field_tag(:spamtrap_js, '', id: id) +
+      @template.javascript_tag(script, nonce: true)
   end
 end

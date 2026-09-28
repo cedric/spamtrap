@@ -29,6 +29,11 @@ module Spamtrap
 
     private
 
+    # Appended only when context is non-nil, so the default AAD/message shape is unchanged.
+    def spamtrap_aad(timestamp, context)
+      context.nil? ? timestamp.to_s : "#{timestamp}:#{context}"
+    end
+
     # aad binds the token to the render timestamp so it can't be replayed under a different one.
     def spamtrap_encrypt_field(field_name, aad)
       cipher = OpenSSL::Cipher.new(CIPHER)
@@ -69,11 +74,22 @@ module Spamtrap
       nil
     end
 
+    # Value the inline script writes into spamtrap_js. Visible in the page source by design:
+    # it proves a script ran, not that the client is honest.
+    def spamtrap_js_digest(timestamp, honeypot, secret: Spamtrap.secret_key_base, context: nil)
+      key = Spamtrap::Crypto.keys_for(secret)[:nonce]
+      message = "js:v1:#{timestamp}:#{honeypot}"
+      message += ":#{context}" unless context.nil? # appended only when present so the default digest is unchanged
+      OpenSSL::HMAC.hexdigest('SHA256', key, message)
+    end
+
     # v1: versions the message for future key rotation; honeypot scopes a token to one form.
     # secret defaults to current but the caller retries with previous_secret_key_base on mismatch.
-    def spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id, bind_ip: Spamtrap.nonce_bind_ip, secret: Spamtrap.secret_key_base)
+    def spamtrap_nonce_digest(timestamp, ip, honeypot, nonce_id, bind_ip: Spamtrap.nonce_bind_ip, secret: Spamtrap.secret_key_base, context: nil)
       key = Spamtrap::Crypto.keys_for(secret)[:nonce]
-      OpenSSL::HMAC.hexdigest('SHA256', key, "v1:#{timestamp}:#{Spamtrap.normalize_ip(ip, bind_ip)}:#{honeypot}:#{nonce_id}")
+      message = "v1:#{timestamp}:#{Spamtrap.normalize_ip(ip, bind_ip)}:#{honeypot}:#{nonce_id}"
+      message += ":#{context}" unless context.nil? # appended only when present so the default digest is unchanged
+      OpenSSL::HMAC.hexdigest('SHA256', key, message)
     end
   end
 end

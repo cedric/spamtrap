@@ -4,7 +4,7 @@ module Spamtrap::Controller
   # Fields Rails/browsers/forms add that a strict action must not treat as attacker-controlled plaintext.
   FRAMEWORK_PARAMS = %w[
     authenticity_token commit button _method utf8
-    spamtrap_timestamp spamtrap_nonce spamtrap_nonce_id
+    spamtrap_timestamp spamtrap_nonce spamtrap_nonce_id spamtrap_js
   ].freeze
 
   # Captcha widgets inject their own plaintext param the app can't encrypt: Google
@@ -26,41 +26,50 @@ module Spamtrap::Controller
       trap_response_opt = options.key?(:trap_response) ? options.delete(:trap_response) : :global
       nonce_bind_ip_opt = options.key?(:nonce_bind_ip) ? options.delete(:nonce_bind_ip) : :global
       min_fill_time_opt = options.key?(:min_fill_time) ? options.delete(:min_fill_time) : :global
+      js_proof_opt      = options.key?(:js_proof)      ? options.delete(:js_proof)      : :global
+      suspicious_if_opt = options.key?(:suspicious_if) ? options.delete(:suspicious_if) : :global
 
       before_action(options) do |controller|
         next unless Spamtrap.enabled
 
         controller.instance_eval(&block) if block_given?
         controller.instance_eval do
-          nonce_enabled    = nonce_opt         == :global ? Spamtrap.nonce         : nonce_opt
-          nonce_timeout    = timeout_opt       == :global ? Spamtrap.nonce_timeout : timeout_opt
-          mutate_enabled   = mutate_opt        == :global ? Spamtrap.mutate        : mutate_opt
-          bind_ip          = nonce_bind_ip_opt == :global ? Spamtrap.nonce_bind_ip : nonce_bind_ip_opt
-          min_fill_time    = min_fill_time_opt == :global ? Spamtrap.min_fill_time : min_fill_time_opt
+          nonce_enabled     = nonce_opt         == :global ? Spamtrap.nonce         : nonce_opt
+          nonce_timeout     = timeout_opt       == :global ? Spamtrap.nonce_timeout : timeout_opt
+          mutate_enabled    = mutate_opt        == :global ? Spamtrap.mutate        : mutate_opt
+          bind_ip           = nonce_bind_ip_opt == :global ? Spamtrap.nonce_bind_ip : nonce_bind_ip_opt
+          min_fill_time     = min_fill_time_opt == :global ? Spamtrap.min_fill_time : min_fill_time_opt
+          js_proof_enabled  = js_proof_opt      == :global ? Spamtrap.js_proof      : js_proof_opt
+          suspicious_hook   = suspicious_if_opt == :global ? Spamtrap.suspicious_if : suspicious_if_opt
           # true and :strict both trap plaintext keys; :lenient only remaps.
-          strict           = mutate_enabled && mutate_enabled != :lenient
+          strict            = mutate_enabled && mutate_enabled != :lenient
+          context           = Spamtrap.token_context_for(request)
 
-          remap = spamtrap_remap_params(Spamtrap.mutation_timeout) if mutate_enabled
+          remap = spamtrap_remap_params(Spamtrap.mutation_timeout, context) if mutate_enabled
 
-          if params[honeypot].present?
+          if Spamtrap.honeypot_fields(honeypot).each_value.any? { |field| params[field].present? }
             spamtrap_trap(:honeypot, honeypot, on_trap_opt, trap_response_opt)
           # :expired traps in lenient mode too, or a remapped-but-stale token would otherwise be accepted.
           elsif mutate_enabled && remap[0] == :expired
             spamtrap_trap(:mutation_expired, honeypot, on_trap_opt, trap_response_opt)
           elsif strict && (reason = spamtrap_strict_violation(remap, honeypot))
             spamtrap_trap(reason, honeypot, on_trap_opt, trap_response_opt)
-          elsif nonce_enabled && (reason = spamtrap_nonce_failure(nonce_timeout, honeypot, nonce_enabled, bind_ip: bind_ip, min_fill_time: min_fill_time))
+          elsif nonce_enabled && (reason = spamtrap_nonce_failure(nonce_timeout, honeypot, nonce_enabled, bind_ip: bind_ip, min_fill_time: min_fill_time, context: context))
             spamtrap_trap(reason, honeypot, on_trap_opt, trap_response_opt)
           # Mutation-only forms: the nonce path above already applied the fill time.
           elsif !nonce_enabled && mutate_enabled && spamtrap_too_fast?(min_fill_time)
             spamtrap_trap(:too_fast, honeypot, on_trap_opt, trap_response_opt)
+          elsif js_proof_enabled && (reason = spamtrap_js_proof_failure(honeypot, context: context))
+            spamtrap_trap(reason, honeypot, on_trap_opt, trap_response_opt)
+          elsif suspicious_hook && spamtrap_content_suspicious?(suspicious_hook)
+            spamtrap_trap(:content, honeypot, on_trap_opt, trap_response_opt)
           end
         end
       end
     end
   end
 
-  def spamtrap_nonce_failure(timeout, honeypot, mode, bind_ip: Spamtrap.nonce_bind_ip, min_fill_time: Spamtrap.min_fill_time)
+  def spamtrap_nonce_failure(timeout, honeypot, mode, bind_ip: Spamtrap.nonce_bind_ip, min_fill_time: Spamtrap.min_fill_time, context: nil)
     timestamp = params[:spamtrap_timestamp].to_i
     nonce     = params[:spamtrap_nonce].to_s
     nonce_id  = params[:spamtrap_nonce_id].to_s
@@ -72,11 +81,11 @@ module Spamtrap::Controller
     return :nonce_invalid if timestamp - now > Spamtrap.nonce_skew
     return :nonce_expired if now - timestamp > timeout.to_i # checked before the HMAC so a genuine expired token reports as expired
 
-    expected = spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id, bind_ip: bind_ip)
+    expected = spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id, bind_ip: bind_ip, context: context)
     unless ActiveSupport::SecurityUtils.secure_compare(nonce, expected)
       # Retry with the previous secret during a rotation window before giving up.
       previous_secret = Spamtrap.previous_secret_key_base
-      previous = previous_secret && spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id, bind_ip: bind_ip, secret: previous_secret)
+      previous = previous_secret && spamtrap_nonce_digest(timestamp, request.remote_ip, honeypot, nonce_id, bind_ip: bind_ip, secret: previous_secret, context: context)
       return :nonce_invalid unless previous && ActiveSupport::SecurityUtils.secure_compare(nonce, previous)
     end
 
@@ -118,13 +127,13 @@ module Spamtrap::Controller
   # the decrypt itself) so on_trap/trap_response can re-render the form with the user's
   # input; the action never runs, so an old token can only help show that input back, and
   # key rotation bounds how far back it can reach.
-  def spamtrap_remap_params(timeout)
+  def spamtrap_remap_params(timeout, context = nil)
     ts = params[:spamtrap_timestamp].to_i
     return [:missing, []] if ts.zero?
 
     now = Time.now.to_i
     status = now - ts > timeout.to_i || ts - now > Spamtrap.nonce_skew ? :expired : :ok
-    [status, spamtrap_remap_hash(params, ts.to_s)]
+    [status, spamtrap_remap_hash(params, spamtrap_aad(ts, context))]
   end
 
   def spamtrap_remap_hash(hash, aad, depth = 0)
@@ -166,8 +175,40 @@ module Spamtrap::Controller
     return :plaintext_field if leftovers.any? { |_key, depth| depth > 0 }
 
     # controller/action/id/format are Rails' own routing params, always present and always plaintext.
-    allowed = FRAMEWORK_PARAMS + CAPTCHA_PARAMS + [honeypot.to_s] + request.path_parameters.keys.map(&:to_s) + Spamtrap.allowed_params
+    allowed = FRAMEWORK_PARAMS + CAPTCHA_PARAMS + Spamtrap.honeypot_fields(honeypot).values +
+              request.path_parameters.keys.map(&:to_s) + Spamtrap.allowed_params
     :plaintext_field if leftovers.any? { |key, _depth| !allowed.include?(key) }
+  end
+
+  # ts.zero? means no timestamp was submitted at all, so there's nothing to bind spamtrap_js to.
+  # The token is public in the page source, so without nonce or mutation the timestamp is the
+  # only thing that expires it; bound its age like a nonce.
+  def spamtrap_js_proof_failure(honeypot, context: nil)
+    ts = params[:spamtrap_timestamp].to_i
+    js = params[:spamtrap_js].to_s
+    return :no_js if ts.zero? || js.blank?
+
+    now = Time.now.to_i
+    return :no_js if now - ts > Spamtrap.nonce_timeout.to_i || ts - now > Spamtrap.nonce_skew
+
+    expected = spamtrap_js_digest(ts, honeypot, context: context)
+    return nil if ActiveSupport::SecurityUtils.secure_compare(js, expected)
+
+    # Retry with the previous secret during a rotation window before giving up.
+    previous_secret = Spamtrap.previous_secret_key_base
+    previous = previous_secret && spamtrap_js_digest(ts, honeypot, secret: previous_secret, context: context)
+    return nil if previous && ActiveSupport::SecurityUtils.secure_compare(js, previous)
+
+    :no_js
+  end
+
+  # A raising hook is treated as not suspicious (fail open); a bug in an app's own
+  # keyword regex must not end up trapping every visitor.
+  def spamtrap_content_suspicious?(callable)
+    !!spamtrap_call(callable, { params: params, request: request, controller: self }, positional: params)
+  rescue StandardError => e
+    Rails.logger.error "Spamtrap suspicious_if callback raised: #{e.class}: #{e.message}"
+    false
   end
 
   # Logs, invokes on_trap, then applies the trap response unless the callback already
@@ -209,24 +250,32 @@ module Spamtrap::Controller
     return unless callback.respond_to?(:call)
 
     payload = { reason: reason, request: request, controller: self, honeypot: honeypot.to_s, params: params }
-    # Procs report :parameters directly; other callables (methods, etc.) need it via #method(:call).
-    parameters = callback.respond_to?(:parameters) ? callback.parameters : callback.method(:call).parameters
-
-    if parameters.any? { |type, _| type == :keyrest }
-      callback.call(**payload)
-    elsif parameters.any? { |type, _| type == :key || type == :keyreq }
-      names = parameters.select { |type, _| type == :key || type == :keyreq }.map { |_, name| name }
-      callback.call(**payload.slice(*names))
-    elsif parameters.any? { |type, _| type == :req || type == :opt || type == :rest }
-      callback.call(payload)
-    else
-      callback.call
-    end
+    spamtrap_call(callback, payload, positional: payload)
   rescue StandardError => e
     Rails.logger.error "Spamtrap on_trap callback raised: #{e.class}: #{e.message}"
   end
 
+  # Dispatches a user-supplied callable per its declared parameters, shared by on_trap and
+  # suspicious_if: kwrest gets the whole payload, keywords get a matching slice, a bare
+  # positional gets `positional` (the payload for on_trap, params for suspicious_if).
+  def spamtrap_call(callable, payload, positional:)
+    # Procs report :parameters directly; other callables (methods, etc.) need it via #method(:call).
+    parameters = callable.respond_to?(:parameters) ? callable.parameters : callable.method(:call).parameters
+
+    if parameters.any? { |type, _| type == :keyrest }
+      callable.call(**payload)
+    elsif parameters.any? { |type, _| type == :key || type == :keyreq }
+      names = parameters.select { |type, _| type == :key || type == :keyreq }.map { |_, name| name }
+      callable.call(**payload.slice(*names))
+    elsif parameters.any? { |type, _| type == :req || type == :opt || type == :rest }
+      callable.call(positional)
+    else
+      callable.call
+    end
+  end
+
   private :spamtrap_nonce_failure, :spamtrap_too_fast?, :spamtrap_remap_params, :spamtrap_remap_hash,
-          :spamtrap_strict_violation, :spamtrap_trap, :spamtrap_render_trap, :spamtrap_invoke_on_trap
+          :spamtrap_strict_violation, :spamtrap_trap, :spamtrap_render_trap, :spamtrap_invoke_on_trap,
+          :spamtrap_call, :spamtrap_js_proof_failure, :spamtrap_content_suspicious?
 
 end

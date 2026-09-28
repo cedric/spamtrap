@@ -85,12 +85,42 @@ module Spamtrap
       @secret_key_base || Rails.application.secret_key_base
     end
 
+    attr_writer :honeypot_styles, :js_proof, :suspicious_if
+
+    # Decoys f.spamtrap renders: any of :textarea, :text, :checkbox. Default is the textarea only.
+    def honeypot_styles
+      Array(@honeypot_styles.nil? ? :textarea : @honeypot_styles).map(&:to_sym)
+    end
+
+    # Require a hidden field that only an executing script fills in; excludes no-JS users.
+    def js_proof
+      @js_proof || false
+    end
+
+    # App-defined heuristic run after every other check; truthy result traps as :content.
+    def suspicious_if
+      @suspicious_if
+    end
+
     attr_writer :previous_secret_key_base
 
     # Set during a rotation window so tokens minted under the old secret still verify/decrypt.
     def previous_secret_key_base
       @previous_secret_key_base
     end
+
+    attr_writer :token_context
+
+    # Callable taking the request and returning a String mixed into every token, so a token
+    # minted on one hostname doesn't verify on another. Off (nil) by default.
+    def token_context
+      @token_context
+    end
+  end
+
+  # nil when token_context is unset, so the token format is unchanged for apps that don't opt in.
+  def self.token_context_for(request)
+    token_context && token_context.call(request).to_s
   end
 
   # Normalises ip per mode: true keeps it as-is, :prefix masks to its /24 (IPv4) or /48 (IPv6)
@@ -111,6 +141,12 @@ module Spamtrap
     else
       ip.to_s
     end
+  end
+
+  # Parameter names for each honeypot style, derived from the declared name so the view and
+  # controller agree without extra configuration. With mutation on they are encrypted like any field.
+  def self.honeypot_fields(name)
+    { textarea: name.to_s, text: "#{name}_input", checkbox: "#{name}_check" }
   end
 
   # Key for Rack::Attack / Rails' rate_limit, scoped by the normalized client IP.

@@ -33,6 +33,12 @@ class FormBuilderMutationTest < ActionView::TestCase
     ActionView::Helpers::FormBuilder.new(:message, object, self, {})
   end
 
+  # @template is this test case itself (see build_form_builder above), so it lacks the
+  # controller-delegated helper a real app view gets; stub it as "no CSP configured".
+  def content_security_policy_nonce
+    nil
+  end
+
   # Build a Message with only the given attributes set, by name, so tests don't
   # have to count positional Struct.new arguments.
   def build_message(**attrs)
@@ -340,6 +346,55 @@ class FormBuilderMutationTest < ActionView::TestCase
     self.request = original_request
   end
 
+  # --- token_context (multi-tenant token binding) ---
+
+  def test_mutation_token_binds_to_the_request_host_when_token_context_is_set
+    Spamtrap.token_context = ->(req) { req.host }
+    request.host = 'a.example'
+
+    f = build_form_builder(Message.new('Alice'))
+    spamtrap_html = f.spamtrap(:trap, mutate: true)
+    timestamp = spamtrap_html[/name="spamtrap_timestamp"[^>]*value="(\d+)"/, 1].to_i
+    token = f.text_field(:name)[/name="message\[([^\]]+)\]"/, 1]
+
+    assert spamtrap_decrypt(token, timestamp, context: 'a.example')
+    assert_nil spamtrap_decrypt(token, timestamp, context: 'b.example')
+  ensure
+    Spamtrap.token_context = nil
+  end
+
+  def test_fields_for_child_token_decrypts_with_the_same_context_as_its_parent
+    Spamtrap.token_context = ->(req) { req.host }
+    request.host = 'a.example'
+
+    f = build_form_builder(Message.new('Alice'))
+    spamtrap_html = f.spamtrap(:trap, mutate: true)
+    timestamp = spamtrap_html[/name="spamtrap_timestamp"[^>]*value="(\d+)"/, 1].to_i
+
+    child_html = +''
+    f.fields_for(:items) { |c| child_html << c.text_field(:name) }
+    child_token = child_html[/name="[^"]*\]\[([^\]]+)\]"/, 1]
+
+    assert spamtrap_decrypt(child_token, timestamp, context: 'a.example')
+  ensure
+    Spamtrap.token_context = nil
+  end
+
+  def test_spamtrap_without_a_request_raises_no_request_error_when_token_context_is_set
+    Spamtrap.token_context = ->(req) { req.host }
+    msg = Message.new
+    f   = build_form_builder(msg)
+
+    original_request = request
+    self.request = nil
+
+    error = assert_raises(Spamtrap::NoRequestError) { f.spamtrap(:trap, mutate: true) }
+    assert_match(/Spamtrap\.token_context needs a request/, error.message)
+  ensure
+    self.request = original_request
+    Spamtrap.token_context = nil
+  end
+
   # --- radio_button (task 4) ---
 
   def test_radio_button_checked_reflects_model_value_and_name_is_encrypted
@@ -556,6 +611,108 @@ class FormBuilderMutationTest < ActionView::TestCase
     assert_equal 1, names.uniq.size, names.inspect
     assert_match(/\Amessage\[items\]\[[A-Za-z0-9_-]+\]\z/, names.first)
     assert_equal f.text_field(:name)[/name="message\[([^\]]+)\]"/, 1], names.first[/\]\[([^\]]+)\]\z/, 1]
+  end
+
+  # --- honeypot styles ---
+
+  def test_spamtrap_default_styles_renders_only_textarea
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap)
+
+    assert_match(/<textarea[^>]*\sname="trap"/, html)
+    refute_match(/<input/, html)
+  end
+
+  def test_spamtrap_styles_option_renders_all_requested_decoys_with_derived_names
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, styles: %i[textarea text checkbox])
+
+    input_tags   = html.scan(/<input[^>]*>/)
+    text_tag     = input_tags.find { |t| t.include?('type="text"') }
+    checkbox_tag = input_tags.find { |t| t.include?('type="checkbox"') }
+
+    assert_match(/<textarea[^>]*\sname="trap"/, html)
+    assert text_tag, 'expected a text input decoy'
+    assert_match(/\sname="trap_input"/, text_tag)
+    assert checkbox_tag, 'expected a checkbox input decoy'
+    assert_match(/\sname="trap_check"/, checkbox_tag)
+
+    # every decoy shares the same hiding attributes
+    assert_equal 3, html.scan('tabindex="-1"').size
+    assert_equal 3, html.scan('autocomplete="off"').size
+    assert_equal 3, html.scan('aria-hidden="true"').size
+    assert_equal 3, html.scan('style="display:none"').size
+  end
+
+  def test_spamtrap_styles_names_are_encrypted_when_mutate_is_true
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, styles: %i[textarea text checkbox], mutate: true)
+    timestamp = f.instance_variable_get(:@spamtrap_timestamp)
+
+    input_tags   = html.scan(/<input[^>]*>/)
+    text_tag     = input_tags.find { |t| t.include?('type="text"') }
+    checkbox_tag = input_tags.find { |t| t.include?('type="checkbox"') }
+
+    textarea_name = html[/<textarea[^>]*\sname="([^"]+)"/, 1]
+    text_name     = text_tag[/\sname="([^"]+)"/, 1]
+    checkbox_name = checkbox_tag[/\sname="([^"]+)"/, 1]
+
+    assert_equal :trap,       spamtrap_decrypt(textarea_name, timestamp)
+    assert_equal :trap_input, spamtrap_decrypt(text_name, timestamp)
+    assert_equal :trap_check, spamtrap_decrypt(checkbox_name, timestamp)
+  end
+
+  def test_spamtrap_unknown_style_raises_argument_error
+    msg = Message.new
+    f   = build_form_builder(msg)
+
+    assert_raises(ArgumentError) { f.spamtrap(:trap, styles: %i[textarea bogus]) }
+  end
+
+  # --- JS proof of presence ---
+
+  def test_spamtrap_default_has_no_js_proof
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap)
+
+    refute_match(/<script/, html)
+    refute_includes html, 'spamtrap_js'
+  end
+
+  def test_spamtrap_js_proof_renders_hidden_field_and_script_matching_digest
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, js_proof: true)
+
+    input_tags    = html.scan(/<input[^>]*>/)
+    js_input      = input_tags.find { |t| t.include?('name="spamtrap_js"') }
+    timestamp_tag = input_tags.find { |t| t.include?('name="spamtrap_timestamp"') }
+
+    assert js_input, 'expected a hidden spamtrap_js input'
+    assert_includes js_input, 'type="hidden"'
+    assert_match(/\svalue=""/, js_input)
+    assert_equal 1, html.scan('name="spamtrap_timestamp"').size
+
+    timestamp       = timestamp_tag[/\svalue="([^"]+)"/, 1].to_i
+    expected_digest = spamtrap_js_digest(timestamp, 'trap')
+
+    script            = html[/<script[^>]*>(.*?)<\/script>/m, 1]
+    reversed_literal  = script[/i\.value="([0-9a-f]+)"/, 1]
+
+    assert_equal expected_digest, reversed_literal.reverse
+    refute_includes html, expected_digest
+  end
+
+  def test_spamtrap_js_proof_with_nonce_and_mutate_emits_timestamp_once
+    msg  = Message.new
+    f    = build_form_builder(msg)
+    html = f.spamtrap(:trap, js_proof: true, nonce: true, mutate: true)
+
+    assert_equal 1, html.scan('name="spamtrap_timestamp"').size
   end
 
 end
