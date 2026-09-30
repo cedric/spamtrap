@@ -109,6 +109,18 @@ class IntegrationTest < ActionDispatch::IntegrationTest
     assert_equal 'create', events.first[:action]
     assert_equal 'trap_field', events.first[:honeypot]
   end
+
+  def test_logged_params_mask_mutated_fields_the_app_filters
+    form = rendered_form
+    name_of = ->(id) { response.body[/<input[^>]*id="#{id}"[^>]*>/][/name="comment\[([^\]]*)\]"/, 1] }
+    email, body = name_of.('comment_email'), name_of.('comment_body')
+
+    post '/integration/create', params: form
+    assert_response :ok
+    logged = request.filtered_parameters['comment']
+    assert_equal ActiveSupport::ParameterFilter::FILTERED, logged[email]
+    assert_equal 'x', logged[body]
+  end
 end
 
 # Spamtrap.token_context bound to the request host: rendering and posting on the same

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2026-09-29
+
+### Fixed
+- Mutated fields reached the Rails log unfiltered. Rails logs params before any
+  `before_action`, so it saw the encrypted names, and name-based `config.filter_parameters`
+  entries such as `:email` never matched them: every mutated form's email addresses (and
+  anything else the app filters) were logged in plain text.
+
+### Added
+- `Spamtrap.filter_parameters` (default `true`). The Railtie appends a block to
+  `config.filter_parameters` that, on requests carrying `spamtrap_timestamp`, decrypts each
+  mutated name and applies the app's own filters to the field's real path, so dotted
+  filters such as `"credit_card.number"` match too. It uses whatever
+  `config.filter_parameters` holds, so there is no separate list. The decryption skips the
+  GCM tag check because `token_context` isn't known yet when Rails filters params; the
+  unverified name only decides whether to mask a logged value.
+
 ## [0.4.2] - 2026-09-27
 
 ### Added

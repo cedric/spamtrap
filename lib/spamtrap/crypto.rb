@@ -25,6 +25,24 @@ module Spamtrap
           derived
         end
       end
+
+      # The name a mutated token decrypts to under each secret, skipping the tag and AAD check
+      # because Rails filters params before token_context can be computed. Unverified: fit only
+      # for deciding whether to mask a logged value, never for reading params.
+      def unverified_field_names(token)
+        raw = Base64.urlsafe_decode64(token)
+        return [] unless raw.bytesize > NONCE_LEN + TAG_LEN
+
+        [Spamtrap.secret_key_base, Spamtrap.previous_secret_key_base].compact.filter_map do |secret|
+          cipher = OpenSSL::Cipher.new(CIPHER).decrypt
+          cipher.key = keys_for(secret)[:mutation]
+          cipher.iv  = raw[0, NONCE_LEN]
+          name = cipher.update(raw[NONCE_LEN...-TAG_LEN]).force_encoding(Encoding::UTF_8)
+          name if name.valid_encoding? # a wrong secret yields random bytes, rarely valid UTF-8
+        end
+      rescue ArgumentError
+        []
+      end
     end
 
     private

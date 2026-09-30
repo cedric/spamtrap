@@ -9,5 +9,12 @@ module Spamtrap
       # miss the on_load hook, so patch now if the form helpers are already loaded.
       Spamtrap.install_form_builder! if Spamtrap.form_builder_loaded?
     end
+
+    # After the app's initializers, so one that assigns filter_parameters can't drop the block.
+    # Always installed; Spamtrap.filter_parameters switches it at request time.
+    initializer 'spamtrap.filter_parameters', after: :load_config_initializers do |app|
+      filters = app.config.filter_parameters
+      filters << Spamtrap::ParameterFilter::BLOCK unless filters.include?(Spamtrap::ParameterFilter::BLOCK)
+    end
   end
 end

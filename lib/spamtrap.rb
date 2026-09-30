@@ -63,6 +63,13 @@ module Spamtrap
       @enabled.nil? ? true : @enabled
     end
 
+    attr_writer :filter_parameters
+
+    # Apply the app's filter_parameters to mutated field names in the log. Default true.
+    def filter_parameters
+      @filter_parameters.nil? ? true : @filter_parameters
+    end
+
     attr_writer :nonce_bind_ip
 
     # true binds the nonce to the full client IP (default), :prefix to its /24 or /48
@@ -185,5 +192,6 @@ module Spamtrap
   require 'spamtrap/crypto'
   require 'spamtrap/controller'
   require 'spamtrap/helper'
+  require 'spamtrap/parameter_filter'
   require 'spamtrap/railtie' if defined?(Rails::Railtie)
 end

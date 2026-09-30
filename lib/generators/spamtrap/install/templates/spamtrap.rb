@@ -41,6 +41,9 @@
 # Whether mutated fields keep an id/for derived from the real field name.
 # Spamtrap.stable_ids = true
 
+# Apply config.filter_parameters to mutated field names, which the log otherwise shows unfiltered.
+# Spamtrap.filter_parameters = true
+
 # Fill time
 
 # Minimum seconds between render and submission a human needs; false or 0 disables.

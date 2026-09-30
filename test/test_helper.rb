@@ -14,6 +14,7 @@ class SpamtrapTestApp < Rails::Application
   config.eager_load = false
   config.logger = Logger.new(nil)
   config.cache_store = :memory_store # a bare app defaults to a file store under tmp/
+  config.filter_parameters += [:email] # as a generated app does; the parameter filter tests rely on it
 end
 
 Rails.application.initialize!

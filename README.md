@@ -95,6 +95,7 @@ Spamtrap.nonce_bind_ip    = true          # true (full IP, default), :prefix (/2
 Spamtrap.min_fill_time    = 1             # seconds; false or 0 disables; needs nonce or mutate for a trustworthy timestamp
 Spamtrap.mutate           = false         # false, true/:strict (traps plaintext keys), or :lenient (remap only)
 Spamtrap.allowed_params   = []            # extra top-level param names a strict action accepts unencrypted
+Spamtrap.filter_parameters = true         # apply config.filter_parameters to mutated field names in the log
 Spamtrap.trap_response    = :head         # see "Trap response, Turbo and remote forms" below
 Spamtrap.on_trap          = ->(reason:, request:) { ... }  # optional trap callback
 Spamtrap.suspicious_if    = nil           # optional content hook; see "Content hook" below
@@ -406,6 +407,32 @@ builders, so nested attributes forms are mutated at every level without extra co
 
 Model-backed forms remain fully supported: helpers still pre-populate from model values while
 rendering encrypted field names in the HTML.
+
+### Logging and `filter_parameters`
+
+Rails writes a request's parameters to the log before any `before_action` runs, so it sees
+the encrypted names, and name-based entries in `config.filter_parameters` (`:email`,
+`:passw`, …) never match them. Spamtrap closes that gap by appending a filter block to
+`config.filter_parameters`. On a request carrying `spamtrap_timestamp`, the block decrypts
+each encrypted name and applies your app's own filters to the real name, so a mutated
+`comment[email]` is logged as `[FILTERED]` and a mutated `comment[body]` still appears. There
+is no separate list to maintain: whatever `config.filter_parameters` holds, including
+filters added later, is what applies.
+
+- `token_context` is unknown at that point (it often depends on state a `before_action` sets),
+  so the block decrypts without checking the GCM tag. The unverified name is used only to
+  decide whether to mask a value the client itself sent, never to read params.
+- Dotted filters such as `"credit_card.number"` work too. Only field names are mutated, never
+  the object or `fields_for` names around them, so the block rebuilds the field's real path
+  and runs the filters against it, leaving out array positions as Rails does.
+- When one render's `fields_for` children share a token (the same field name under several
+  parents), the value is masked if a filter matches any of those paths.
+- Cost: a block in `filter_parameters` makes Rails pass it every leaf parameter it filters.
+  The block returns straight away on requests without `spamtrap_timestamp`. On requests with
+  one, it indexes the params once and decrypts only keys shaped like tokens.
+
+Set `Spamtrap.filter_parameters = false` to switch it off. The block stays installed but does
+nothing.
 
 ### Helper coverage
 
