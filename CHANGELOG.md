@@ -316,8 +316,10 @@ All notable changes to this project will be documented in this file.
 - Replace deprecated `render(nothing: true)` with `head :ok` for Rails 4+ compatibility (via [tiegz](https://github.com/tiegz), PR #2).
 - Updated gem dependencies.
 
+## [0.0.5] - 2011-08-10
+
 ### Added
-- Optional block argument on the `spamtrap` controller macro for advanced use cases such as swapping the honeypot with a real form parameter at runtime (added 2011, shipped in this release).
+- Optional block argument on the `spamtrap` controller macro, evaluated in the controller before the honeypot check. It was intended for swapping the honeypot with a real form parameter at runtime, but its return value is discarded, so it cannot change which field is checked.
 
 ## [0.0.3] - 2010-10-21
 
