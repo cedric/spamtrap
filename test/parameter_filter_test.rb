@@ -123,6 +123,27 @@ class ParameterFilterTest < ActiveSupport::TestCase
     assert_equal 'jane@example.com', filter(form(email => 'jane@example.com'))['comment'][email]
   end
 
+  # /\A[A-F]/ matches about one token in eleven, so 200 with none is the redraw at work: without
+  # it, all 200 missing is a three-in-a-billion chance.
+  def test_redraws_a_token_the_apps_filters_would_match_as_it_stands
+    Rails.application.config.filter_parameters += [/\A[A-F]/]
+    tokens = Array.new(200) { token(:body) }
+
+    assert tokens.none? { |t| t.match?(/\A[A-F]/) }
+    assert_equal :body, spamtrap_decrypt(tokens.first, @at)
+  end
+
+  def test_stops_redrawing_when_every_token_would_match
+    Rails.application.config.filter_parameters += [/./]
+    assert_equal :body, spamtrap_decrypt(token(:body), @at)
+  end
+
+  def test_does_not_redraw_when_switched_off
+    Spamtrap.filter_parameters = false
+    Rails.application.config.filter_parameters += [/\A[A-F]/]
+    assert Array.new(200) { token(:body) }.any? { |t| t.match?(/\A[A-F]/) }
+  end
+
   def test_ignores_keys_that_only_look_like_tokens
     params = form('A' * 40 => 'x', 'B' * 41 => 'y', 'a_long_plaintext_parameter_name_of_forty_chars' => 'z')
     assert_equal({ 'A' * 40 => 'x', 'B' * 41 => 'y', 'a_long_plaintext_parameter_name_of_forty_chars' => 'z' }, filter(params)['comment'])

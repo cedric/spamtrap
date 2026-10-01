@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.4] - 2026-10-01
+
+### Changed
+- Requires Ruby 3.4 or newer, up from 3.1, matching the versions CI tests (3.4 and 4.0).
+  Apps on Ruby 3.1 to 3.3 should stay on 0.4.3.
+
+### Fixed
+- A mutated field was occasionally logged as `[FILTERED]` whatever its real name. Rails
+  applies name-based `config.filter_parameters` entries before calling any block, and they
+  match substrings, so a random token that happened to contain `otp`, `ssn`, `cvv` or the
+  like was masked before `Spamtrap.filter_parameters` could check the real name: 0.38% of
+  tokens per field under Rails' generated list. That hid harmless values from logs and error
+  reports and made tests asserting on them fail intermittently. Never the reverse: a field the
+  app filters was still masked. When `Spamtrap.filter_parameters` is on, a token the app's
+  filters would match as it stands is now drawn again (at most eight times). The token format
+  is unchanged, so forms rendered before an upgrade still submit after it.
+
 ## [0.4.3] - 2026-09-29
 
 ### Fixed

@@ -1,6 +1,6 @@
 # Spamtrap
 
-[![Test](https://github.com/cedric/spamtrap/actions/workflows/test.yml/badge.svg)](https://github.com/cedric/spamtrap/actions/workflows/test.yml)
+[![CI](https://github.com/cedric/spamtrap/actions/workflows/ci.yml/badge.svg)](https://github.com/cedric/spamtrap/actions/workflows/ci.yml)
 
 Spamtrap is a Rails gem that protects forms from spambots through a set of complementary,
 individually opt-in mechanisms:
@@ -39,7 +39,7 @@ defense on its own — read the guarantees below before relying on one.
 
 ## Installation
 
-Requires Ruby 3.1 or newer and Rails 7.2 or newer. CI runs Ruby 3.4 and 4.0 against Rails 7.2 through 8.1.
+Requires Ruby 3.4 or newer and Rails 7.2 or newer. CI runs Ruby 3.4 and 4.0 against Rails 7.2 through 8.1.
 
 Add the following to your Gemfile:
 
@@ -427,6 +427,12 @@ filters added later, is what applies.
   and runs the filters against it, leaving out array positions as Rails does.
 - When one render's `fields_for` children share a token (the same field name under several
   parents), the value is masked if a filter matches any of those paths.
+- Rails checks name-based filters before it calls any block, so a filter that matched the
+  encrypted name itself would mask the field whatever its real name. With Rails' generated
+  list, a token contains `otp`, `ssn`, `cvv` or the like in about 0.4% of draws. The form
+  builder (and `Spamtrap::TestHelper`) therefore draws a field's token again whenever the
+  app's filters would match it as it stands, giving up after eight draws, so a filter that
+  matches every token can't stall a render.
 - Cost: a block in `filter_parameters` makes Rails pass it every leaf parameter it filters.
   The block returns straight away on requests without `spamtrap_timestamp`. On requests with
   one, it indexes the params once and decrypts only keys shaped like tokens.

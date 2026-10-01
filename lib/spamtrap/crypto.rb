@@ -9,6 +9,8 @@ module Spamtrap
     NONCE_LEN = 12
     TAG_LEN   = 16
 
+    TOKEN_DRAWS = 8 # see spamtrap_encrypt_field
+
     class << self
       # HKDF-derives {mutation:, nonce:} keys, memoised per secret at module level so each
       # request doesn't re-derive them; previous_secret_key_base is what keeps a rotation from
@@ -52,8 +54,20 @@ module Spamtrap
       context.nil? ? timestamp.to_s : "#{timestamp}:#{context}"
     end
 
-    # aad binds the token to the render timestamp so it can't be replayed under a different one.
+    # A token the app's filter_parameters match as it stands (one containing otp or cvv, say) is
+    # masked in the log before the real name is checked: 0.38% of draws per field under Rails'
+    # generated list. So draw again. Capped because a filter matching every token would never stop.
     def spamtrap_encrypt_field(field_name, aad)
+      token = nil
+      TOKEN_DRAWS.times do
+        token = spamtrap_encrypt_field_once(field_name, aad)
+        break unless defined?(Spamtrap::ParameterFilter) && Spamtrap::ParameterFilter.masks_token?(token)
+      end
+      token
+    end
+
+    # aad binds the token to the render timestamp so it can't be replayed under a different one.
+    def spamtrap_encrypt_field_once(field_name, aad)
       cipher = OpenSSL::Cipher.new(CIPHER)
       cipher.encrypt
       cipher.key = Spamtrap::Crypto.keys_for(Spamtrap.secret_key_base)[:mutation]

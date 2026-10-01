@@ -21,7 +21,19 @@ module Spamtrap
       value.replace(masked) if masked
     end
 
+    # Stands in for a field's value when asking whether the app's filters would mask a token.
+    PROBE = 'spamtrap'.freeze
+
     class << self
+      # Whether the app's filters mask a value by the token itself. Rails checks key filters before
+      # calling any block, so such a token hides its field whatever the real name. Leaf only, so a
+      # dotted filter such as "comment.otp" goes unchecked; it can match only a token's first letters.
+      def masks_token?(token)
+        return false unless Spamtrap.filter_parameters && defined?(Rails.application) && Rails.application
+
+        app_filter.filter(token => PROBE)[token] != PROBE
+      end
+
       # What the app's filters turn value into at the field's real path, or nil if they leave it.
       # Only leaf names are mutated, so the containers above the token give the real path. A token
       # shared by fields_for children has several parents; masking if any path would is the safe side.

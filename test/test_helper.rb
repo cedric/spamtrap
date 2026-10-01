@@ -14,7 +14,9 @@ class SpamtrapTestApp < Rails::Application
   config.eager_load = false
   config.logger = Logger.new(nil)
   config.cache_store = :memory_store # a bare app defaults to a file store under tmp/
-  config.filter_parameters += [:email] # as a generated app does; the parameter filter tests rely on it
+  # Rails' generated list. The three-letter entries are what a random token can contain by chance,
+  # which only email alone never exercised; the parameter filter tests rely on both.
+  config.filter_parameters += %i[passw email secret token _key crypt salt certificate otp ssn cvv cvc]
 end
 
 Rails.application.initialize!

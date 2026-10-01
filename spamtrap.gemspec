@@ -13,7 +13,7 @@ spec = Gem::Specification.new do |s|
   s.description = 'Create bogus form fields (honeypots) that will be filled-in by spambots. When submitted, the form data will be discarded while still returning a 200 response.'
   s.require_paths = ['lib']
   s.files = Dir['lib/**/*']
-  s.required_ruby_version = '>= 3.1.0'
+  s.required_ruby_version = '>= 3.4.0'
   s.required_rubygems_version = '>= 1.3.6'
   s.add_dependency('actionpack', '>= 7.2', '< 9')
   s.add_dependency('actionview', '>= 7.2', '< 9')
